@@ -2,7 +2,7 @@
 # LingVPN Marzban Installer - Auto Resume
 # Support: Debian 11/12/13 + Ubuntu 20.04/22.04
 
-sfile="https://raw.githubusercontent.com/faiqzuhry/Faiq-zuhry/main"
+sfile="https://raw.githubusercontent.com/faiqzuhry/faiqzuhry/main"
 STATE_DIR="/var/lib/lingvpn-install/state"
 LOG_FILE="/root/lingvpn-install.log"
 mkdir -p "$STATE_DIR"
