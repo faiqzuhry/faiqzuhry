@@ -1437,11 +1437,29 @@ sed -i \
     -e '\#/etc/localtime#d' \
     /opt/marzban/docker-compose.yml
 
-# Pastikan image panel dan migration berasal dari upstream Marzban yang sama.
-# Ini mencegah compose custom lama menjalankan kode baru dengan schema lama.
-if grep -qE 'image:[[:space:]]*gozargah/marzban:' /opt/marzban/docker-compose.yml; then
-    sed -i -E 's#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\1latest#' /opt/marzban/docker-compose.yml
+# =========================================================
+# MARZBAN IMAGE FIX
+# Repository docker-compose memakai Docker Hub lama:
+#   gozargah/marzban:latest
+# Gunakan registry resmi GitHub Container Registry (GHCR).
+# =========================================================
+MARZBAN_IMAGE="ghcr.io/gozargah/marzban:latest"
+
+# Paksa service marzban memakai image resmi GHCR.
+# Tidak mengubah image nginx.
+if grep -qE '^[[:space:]]+marzban:[[:space:]]*$' /opt/marzban/docker-compose.yml; then
+    sed -i -E '/^[[:space:]]+marzban:[[:space:]]*$/,/^[[:space:]]+[A-Za-z0-9_.-]+:[[:space:]]*$/ {
+        /^[[:space:]]+image:[[:space:]]*/ s#^[[:space:]]*image:[[:space:]]*.*#    image: ghcr.io/gozargah/marzban:latest#
+    }' /opt/marzban/docker-compose.yml
 fi
+
+# Pastikan service marzban benar-benar mempunyai image GHCR.
+if ! grep -qE '^[[:space:]]+image:[[:space:]]*ghcr\.io/gozargah/marzban:latest[[:space:]]*$' /opt/marzban/docker-compose.yml; then
+    colorized_echo red "Image Marzban GHCR tidak berhasil diterapkan ke docker-compose.yml."
+    return 1
+fi
+
+colorized_echo cyan "Image Marzban: ${MARZBAN_IMAGE}"
 
 # Migration tanpa membuat backup database otomatis sebelum migration.
 DB_BACKUP=""
@@ -1460,11 +1478,26 @@ else
     return 1
 fi
 
-# Download image terbaru sebelum migration.
+# Download image resmi GHCR sebelum migration.
+# Pull langsung juga memastikan masalah registry terlihat jelas di log.
+if ! docker pull "${MARZBAN_IMAGE}" >> /var/log/marzban-bootstrap.log 2>&1; then
+    colorized_echo red "Gagal mengambil image Marzban dari GHCR."
+    colorized_echo yellow "Image: ${MARZBAN_IMAGE}"
+    colorized_echo yellow "Log: /var/log/marzban-bootstrap.log"
+    return 1
+fi
+
+# Sinkronkan image Compose setelah pull berhasil.
 $COMPOSE_CMD pull marzban >> /var/log/marzban-bootstrap.log 2>&1 || {
-    colorized_echo red "Gagal mengambil image Marzban."
+    colorized_echo red "Docker Compose gagal menyiapkan image Marzban."
     return 1
 }
+
+# Verifikasi image benar-benar tersedia secara lokal.
+if ! docker image inspect "${MARZBAN_IMAGE}" >/dev/null 2>&1; then
+    colorized_echo red "Image Marzban tidak tersedia setelah pull."
+    return 1
+fi
 
 # Jalankan Alembic SEBELUM panel dijalankan.
 # Dengan demikian query admin baru tidak dieksekusi pada schema lama.
