@@ -197,6 +197,23 @@ setup_swap_2gb
 
 # ===== END AUTO SWAP 2GB =====
 
+# =========================================================
+# TIMEZONE POLICY
+# Installer TIDAK mengubah timezone host.
+# UTC/AWS, Asia/Jakarta, atau timezone lain dipertahankan.
+# Docker/Marzban mengikuti waktu host.
+# =========================================================
+ensure_timezone_neutral() {
+    local tz
+    tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+    if [ -n "$tz" ]; then
+        colorized_echo green "[✓] Timezone host dipertahankan: $tz"
+    else
+        colorized_echo yellow "[!] Timezone host tidak dapat dibaca; tidak diubah."
+    fi
+}
+ensure_timezone_neutral
+
 stage01(){
     local supported_os=false
     if [ -f /etc/os-release ]; then
@@ -347,7 +364,19 @@ wget -O /opt/marzban/index.html "https://cdn.jsdelivr.net/gh/MuhammadAshouri/mar
 wget -O /opt/marzban/.env "$sfile/env"
 
 #install compose
-wget -O /opt/marzban/docker-compose.yml "$sfile/docker-compose.yml"
+COMPOSE_TMP="/opt/marzban/docker-compose.yml.download"
+rm -f "$COMPOSE_TMP"
+if ! wget -qO "$COMPOSE_TMP" "$sfile/docker-compose.yml"; then
+    rm -f "$COMPOSE_TMP"
+    colorized_echo red "Gagal mengunduh docker-compose.yml dari repository."
+    return 1
+fi
+if [ ! -s "$COMPOSE_TMP" ]; then
+    rm -f "$COMPOSE_TMP"
+    colorized_echo red "docker-compose.yml hasil download kosong."
+    return 1
+fi
+mv -f "$COMPOSE_TMP" /opt/marzban/docker-compose.yml
 
 # Hapus seluruh bind-mount timezone dari Compose.
 # Timezone host/container tidak dikonfigurasi oleh installer.
@@ -356,6 +385,19 @@ sed -i \
     -e '\#/etc/timezone#d' \
     -e '\#/etc/localtime#d' \
     /opt/marzban/docker-compose.yml
+
+# Pastikan Compose valid sebelum tahap berikutnya.
+if docker compose version >/dev/null 2>&1; then
+    if ! docker compose -f /opt/marzban/docker-compose.yml config >/dev/null 2>&1; then
+        colorized_echo red "docker-compose.yml tidak valid setelah normalisasi."
+        return 1
+    fi
+elif command -v docker-compose >/dev/null 2>&1; then
+    if ! docker-compose -f /opt/marzban/docker-compose.yml config >/dev/null 2>&1; then
+        colorized_echo red "docker-compose.yml tidak valid setelah normalisasi."
+        return 1
+    fi
+fi
 
 #install assets & core
 mkdir -p /etc/autokill/logs
@@ -1299,6 +1341,18 @@ if __name__ == "__main__":
 BOT_USAGE_PY_EOF
 
 chmod 755 /usr/local/bin/usage.py
+
+# Fail2Ban SSH: gunakan journald pada Debian modern.
+install -d /etc/fail2ban/jail.d
+cat > /etc/fail2ban/jail.d/sshd-systemd.local <<'FAIL2BAN_SSHD_EOF'
+[sshd]
+enabled = true
+backend = systemd
+filter = sshd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+FAIL2BAN_SSHD_EOF
 
 stage07() {
     set -e
