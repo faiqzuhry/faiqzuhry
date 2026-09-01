@@ -112,23 +112,20 @@ select_menu() {
             printf '%b┌────────────────────────────────────────┐%b\n' "$CYAN" "$RESET"
             printf '%b│%b              PILIH MENU                %b│%b\n' "$CYAN" "$WHITE" "$CYAN" "$RESET"
             printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
-            printf '%b│%b  %b[01]%b ◉  TAMBAH USER                   %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$CYAN" "$CYAN" "$RESET"
-            printf '%b│%b       %bVMess /VLess /Trojan /Shadowsocks%b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
-            printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
-            printf '%b│%b  %b[02]%b ⚙  KONFIGURASI                   %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$GREEN" "$CYAN" "$RESET"
+            printf '%b│%b  %b[01]%b ⚙  KONFIGURASI                   %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$GREEN" "$CYAN" "$RESET"
             printf '%b│%b       %bManajemen akun, tools, limit     %b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
             printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
-            printf '%b│%b  %b[03]%b ◆  MARZBAN                       %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$MAGENTA" "$CYAN" "$RESET"
+            printf '%b│%b  %b[02]%b ◆  MARZBAN                       %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$MAGENTA" "$CYAN" "$RESET"
             printf '%b│%b       %bService & CLI Marzban            %b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
             printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
-            printf '%b│%b  %b[04]%b ▣  INFORMASI SERVER              %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$YELLOW" "$CYAN" "$RESET"
+            printf '%b│%b  %b[03]%b ▣  INFORMASI SERVER              %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$YELLOW" "$CYAN" "$RESET"
             printf '%b│%b       %bDetail server, status, dashboard %b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
             printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
-            printf '%b│%b  %b[05]%b ↪  KELUAR                        %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$RED" "$CYAN" "$RESET"
+            printf '%b│%b  %b[04]%b ↪  KELUAR                        %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$RED" "$CYAN" "$RESET"
             printf '%b│%b       %bKeluar dari panel                %b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
             printf '%b└────────────────────────────────────────┘%b\n' "$CYAN" "$RESET"
             printf '\n%bKetik nomor menu lalu ENTER%b\n' "$CYAN" "$RESET"
-            printf '%bPilih [1-5]: %b' "$WHITE" "$RESET"
+            printf '%bPilih [1-4]: %b' "$WHITE" "$RESET"
         else
             printf '\n%b── %b%s%b ──%b\n\n' "$CYAN" "$WHITE" "$title" "$RESET" "$CYAN"
             
@@ -218,40 +215,6 @@ run_cmd() {
     bash -c "$cmd"
     printf '\n'
     pause_menu
-}
-
-# -------------------- USER --------------------
-user_menu() {
-    while :; do
-        select_menu "USER MANAGEMENT" \
-            "VMess" "VMess WS" "VMess gRPC" "VMess HTTP Upgrade" \
-            "VLess" "VLess WS" "VLess gRPC" "VLess HTTP Upgrade" \
-            "Trojan" "Trojan WS" "Trojan gRPC" "Trojan HTTP Upgrade" \
-            "Shadowsocks" "Shadowsocks WS" "Shadowsocks gRPC" "Shadowsocks Upgrade" \
-            "Shadowsocks Outline" "Trial User"
-
-        case "$MENU_CHOICE" in
-            1) run_cmd "addvmess" ;;
-            2) run_cmd "addvmws" ;;
-            3) run_cmd "addvmgrpc" ;;
-            4) run_cmd "addvmhu" ;;
-            5) run_cmd "addvless" ;;
-            6) run_cmd "addvlws" ;;
-            7) run_cmd "addvlgrpc" ;;
-            8) run_cmd "addvlhu" ;;
-            9) run_cmd "addtrojan" ;;
-            10) run_cmd "addtrws" ;;
-            11) run_cmd "addtrgrpc" ;;
-            12) run_cmd "addtrhu" ;;
-            13) run_cmd "addshadow" ;;
-            14) run_cmd "addssws" ;;
-            15) run_cmd "addssgrpc" ;;
-            16) run_cmd "addsshu" ;;
-            17) run_cmd "addsso" ;;
-            18) run_cmd "addtrial" ;;
-            *) return ;;
-        esac
-    done
 }
 
 # -------------------- CONFIG --------------------
@@ -389,11 +352,10 @@ while :; do
         "Keluar"
 
     case "$MENU_CHOICE" in
-        1) user_menu ;;
-        2) config_menu ;;
-        3) marzban_menu ;;
-        4) info_menu ;;
-        5|0) cleanup; clear; exit 0 ;;
+        1) config_menu ;;
+        2) marzban_menu ;;
+        3) info_menu ;;
+        4|0) cleanup; clear; exit 0 ;;
     esac
 done
 

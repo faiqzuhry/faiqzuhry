@@ -502,65 +502,99 @@ wget -O /var/lib/marzban/xray_config.json "$sfile/xray_config.json"
 
 stage06() {
     set -e
-#install command
-cd /usr/bin
-#List Trojan
-wget -O addtrws "$sfile/addtrws" && chmod +x addtrws
-wget -O addtrhu "$sfile/addtrhu" && chmod +x addtrhu
-wget -O addtrgrpc "$sfile/addtrgrpc" && chmod +x addtrgrpc
-wget -O addtrojan "$sfile/addtrojan" && chmod +x addtrojan
-#Lits VMess
-wget -O addvmws "$sfile/addvmws" && chmod +x addvmws
-wget -O addvmhu "$sfile/addvmhu" && chmod +x addvmhu
-wget -O addvmgrpc "$sfile/addvmgrpc" && chmod +x addvmgrpc
-wget -O addvmess "$sfile/addvmess" && chmod +x addvmess
-#List VLess
-wget -O addvlws "$sfile/addvlws" && chmod +x addvlws
-wget -O addvlhu "$sfile/addvlhu" && chmod +x addvlhu
-wget -O addvlgrpc "$sfile/addvlgrpc" && chmod +x addvlgrpc
-wget -O addvless "$sfile/addvless" && chmod +x addvless
-#List ShadowSocks
-wget -O addshadow "$sfile/addshadow" && chmod +x addshadow
-wget -O addsso "$sfile/addsso" && chmod +x addsso
-wget -O addssws "$sfile/addssws" && chmod +x addssws
-wget -O addsshu "$sfile/addsshu" && chmod +x addsshu
-wget -O addssgrpc "$sfile/addssgrpc" && chmod +x addssgrpc
-#Additional
-wget -O status "$sfile/status" && chmod +x status
-wget -O addtrial "$sfile/addtrial" && chmod +x addtrial
-wget -qO /usr/bin/menu "$sfile/menu" && chmod 755 /usr/bin/menu
-test -s /usr/bin/menu || { echo "ERROR: file menu kosong/gagal di-download."; exit 1; }
-test -s /usr/bin/menu || { echo "ERROR: file menu kosong/gagal di-download."; exit 1; }
-bash -n /usr/bin/menu || { echo "ERROR: file menu dari repository tidak valid."; exit 1; }
-# Download ganti_domain sebagai file terpisah dari repository.
-wget -qO /usr/bin/ganti_domain "$sfile/ganti_domain" && chmod 755 /usr/bin/ganti_domain
-test -s /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain kosong/gagal di-download."; exit 1; }
-test -s /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain kosong/gagal di-download."; exit 1; }
-bash -n /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain dari repository tidak valid."; exit 1; }
-wget -O ceklogin "$sfile/ceklogin" && chmod +x ceklogin
-wget -O hapus "$sfile/hapus" && chmod +x hapus
-wget -O renew "$sfile/renew" && chmod +x renew
-wget -O resetusage "$sfile/resetusage" && chmod +x resetusage
-wget -O buat_token "$sfile/buat_token" && chmod +x buat_token
-wget -O cekservice "$sfile/cekservice" && chmod +x cekservice
-wget -O ram "$sfile/ram" && chmod +x ram
-wget -O menu-backup "$sfile/menu-backup" && chmod +x menu-backup
-wget -O menu-reboot "$sfile/menu-reboot" && chmod +x menu-reboot
-wget -O menu-akun "$sfile/menu-akun" && chmod +x menu-akun
-wget -O backup "$sfile/backup" && chmod +x backup
-wget -O clearlog "$sfile/clearlog" && chmod +x clearlog
-# Jalankan clearlog otomatis setiap hari pukul 02:00 WIB.
-cat > /etc/cron.d/clearlog_otomatis <<'EOF'
+
+    # =========================================================
+    # FILE REPOSITORY — HANYA FILE YANG ADA DI REPOSITORY
+    # =========================================================
+    # Sengaja TIDAK memasang file add* seperti:
+    # addvmess, addvless, addtrojan, addshadow,
+    # addvmws/addvlws/addtrws/addssws, add*grpc, add*hu,
+    # dan addtrial.
+    #
+    # Hanya file pendukung yang memang ada di repository
+    # dan digunakan oleh menu/installer yang dipasang.
+    # =========================================================
+    cd /usr/bin
+
+    install_repo_script() {
+        local name="$1"
+        local target="${2:-/usr/bin/$1}"
+
+        wget -qO "$target" "$sfile/$name" || {
+            echo "ERROR: gagal download $name dari repository."
+            return 1
+        }
+
+        [ -s "$target" ] || {
+            echo "ERROR: file $name kosong."
+            return 1
+        }
+
+        chmod 755 "$target"
+
+        # Validasi Bash hanya untuk script.
+        case "$name" in
+            *.sh|menu|menu-akun|menu-backup|menu-reboot|backup|buat_token|cekerror|ceklog|ceklogin|ceknginx|cekservice|expired|ganticore|hapus|ram|rebuild|renew|resetusage|routing|seeroute|setlimit|status|autokill|ganti_domain)
+                bash -n "$target" >/dev/null 2>&1 || {
+                    echo "ERROR: syntax $name tidak valid."
+                    return 1
+                }
+                ;;
+        esac
+    }
+
+    # Menu
+    install_repo_script menu /usr/bin/menu
+    install_repo_script menu-akun /usr/bin/menu-akun
+    install_repo_script menu-backup /usr/bin/menu-backup
+    install_repo_script menu-reboot /usr/bin/menu-reboot
+
+    # User / account management
+    install_repo_script ceklogin /usr/bin/ceklogin
+    install_repo_script hapus /usr/bin/hapus
+    install_repo_script renew /usr/bin/renew
+    install_repo_script resetusage /usr/bin/resetusage
+    install_repo_script expired /usr/bin/expired
+    install_repo_script setlimit /usr/bin/setlimit
+    install_repo_script status /usr/bin/status
+
+    # Server tools
+    install_repo_script buat_token /usr/bin/buat_token
+    install_repo_script cekservice /usr/bin/cekservice
+    install_repo_script ram /usr/bin/ram
+    install_repo_script ceklog /usr/bin/ceklog
+    install_repo_script cekerror /usr/bin/cekerror
+    install_repo_script ceknginx /usr/bin/ceknginx
+    install_repo_script clearlog /usr/bin/clearlog
+    install_repo_script autokill /usr/bin/autokill
+
+    # Network / routing / domain
+    install_repo_script ganticore /usr/bin/ganticore
+    install_repo_script routing /usr/bin/routing
+    install_repo_script seeroute /usr/bin/seeroute
+    install_repo_script ganti_domain /usr/bin/ganti_domain
+
+    # Backup / reboot / rebuild
+    install_repo_script backup /usr/bin/backup
+    install_repo_script reboot_otomatis.sh /usr/bin/reboot_otomatis.sh
+    install_repo_script rebuild /usr/local/bin/rebuild
+
+    # SSL helper
+    install_repo_script fix-ssl.sh /usr/bin/fix-ssl.sh
+
+    # Cron
+    cat > /etc/cron.d/clearlog_otomatis <<'EOF'
 00 2 * * * root /usr/bin/clearlog >/dev/null 2>&1
 EOF
-chmod 644 /etc/cron.d/clearlog_otomatis
-systemctl restart cron 2>/dev/null || true
-wget -O ceklog "$sfile/ceklog" && chmod +x ceklog
-wget -O cekerror "$sfile/cekerror" && chmod +x cekerror
-wget -O ceknginx "$sfile/ceknginx" && chmod +x ceknginx
-wget -O expired "$sfile/expired" && chmod +x expired
-wget -O setlimit "$sfile/setlimit" && chmod +x setlimit
-wget -O autokill "$sfile/autokill" && chmod +x autokill
+    chmod 644 /etc/cron.d/clearlog_otomatis
+
+    cat > /etc/cron.d/expired_otomatis <<'EOF'
+00 1 * * * root /usr/bin/expired >/dev/null 2>&1
+EOF
+    chmod 644 /etc/cron.d/expired_otomatis
+
+    systemctl restart cron 2>/dev/null || true
+    cd /root
 
 # =========================================================
 # Install BWBOT - bandwidth monitor Telegram
@@ -1513,49 +1547,13 @@ marzban cli admin delete -u admin -y || log "WARN: cleanup admin dilewati (exit=
 
 
 
-# =========================================================
-# REBUILD VPS
-# Dipasang sebagai /usr/local/bin/rebuild
-# =========================================================
-install_rebuild() {
-    local target="/usr/local/bin/rebuild"
-    local tmp="${target}.tmp"
-    local url="${sfile}/rebuild"
-
-    colorized_echo cyan "[*] Memasang Rebuild VPS..."
-
-    if ! command -v curl >/dev/null 2>&1; then
-        apt-get update -y >/dev/null 2>&1 || true
-        apt-get install -y curl >/dev/null 2>&1 || {
-            colorized_echo yellow "[!] curl tidak tersedia. Rebuild dilewati."
-            return 0
-        }
-    fi
-
-    if curl -4fsSL --retry 3 --connect-timeout 15 --max-time 120 \
-        "$url" -o "$tmp"; then
-        if [ -s "$tmp" ] && bash -n "$tmp" >/dev/null 2>&1; then
-            chmod 755 "$tmp"
-            mv -f "$tmp" "$target"
-            colorized_echo green "[✓] Rebuild VPS terpasang: $target"
-        else
-            rm -f "$tmp"
-            colorized_echo yellow "[!] File Rebuild tidak valid. Instalasi dilanjutkan."
-        fi
-    else
-        rm -f "$tmp"
-        colorized_echo yellow "[!] Gagal mengambil Rebuild. Instalasi dilanjutkan."
-    fi
-}
-
-install_rebuild
 
 run_stage 01 "Validasi OS + input konfigurasi" stage01
 run_stage 02 "Persiapan VPS + paket" stage02
 run_stage 03 "Bootstrap Marzban + Xray" stage03
 run_stage 04 "Profile + VNStat + Speedtest + Gotop" stage04
 run_stage 05 "Nginx + SSL + konfigurasi Xray" stage05
-run_stage 06 "Command LingVPN + Ganti Domain + BWBOT + cron" stage06
+run_stage 06 "Menu + Tools Repository + BWBOT + cron" stage06
 run_stage 07 "Firewall + Fail2ban" stage07
 run_stage 08 "Database + WARP" stage08
 run_stage 09 "Migration database + Admin Marzban" stage09
