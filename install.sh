@@ -86,44 +86,6 @@ run_stage(){
     fi
 }
 
-
-# =========================================================
-# ADAPTIVE TIMEZONE
-# - Tidak memaksa Jakarta untuk semua VPS.
-# - Jika timezone host sudah benar (mis. UTC di AWS), dipertahankan.
-# - Jika IP publik terdeteksi Indonesia dan host masih memakai
-#   timezone US/America, gunakan Asia/Jakarta.
-# - Jika geolokasi gagal, timezone host tidak disentuh.
-# =========================================================
-configure_adaptive_timezone() {
-    local current_tz country=""
-    current_tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
-
-    # Jika timedatectl tidak tersedia, jangan mengubah timezone.
-    command -v timedatectl >/dev/null 2>&1 || return 0
-
-    # Ambil negara berdasarkan IP publik. Kegagalan tidak boleh
-    # menghentikan instalasi.
-    country="$(curl -4fsS --connect-timeout 5 --max-time 10 \
-        'https://ipapi.co/country/' 2>/dev/null | tr -d '[:space:]' || true)"
-
-    if [ "$country" = "ID" ] && [[ "$current_tz" == America/* || "$current_tz" == US/* || "$current_tz" == EST || "$current_tz" == CST || "$current_tz" == MST || "$current_tz" == PST ]]; then
-        if timedatectl set-timezone Asia/Jakarta >/dev/null 2>&1; then
-            colorized_echo green "[✓] IP terdeteksi Indonesia; timezone disesuaikan ke Asia/Jakarta."
-        else
-            colorized_echo yellow "[!] Gagal mengubah timezone ke Asia/Jakarta; timezone lama dipertahankan."
-        fi
-    else
-        if [ -n "$current_tz" ]; then
-            colorized_echo green "[✓] Timezone host dipertahankan: $current_tz"
-        else
-            colorized_echo yellow "[!] Timezone host tidak dapat dibaca; tidak diubah."
-        fi
-    fi
-}
-
-configure_adaptive_timezone
-
 # Safe sysctl: parameter yang tidak tersedia di kernel akan dilewati.
 # Muat kembali konfigurasi tersimpan agar resume melewati input tanpa variabel kosong.
 [ -f /etc/os-release ] && {
@@ -385,21 +347,7 @@ wget -O /opt/marzban/index.html "https://cdn.jsdelivr.net/gh/MuhammadAshouri/mar
 wget -O /opt/marzban/.env "$sfile/env"
 
 #install compose
-# Download Compose ke file sementara lalu validasi sebelum mengganti file aktif.
-# Jika repository mengembalikan 404/empty/rusak, Compose lama tidak disentuh.
-COMPOSE_TMP="/opt/marzban/docker-compose.yml.download"
-rm -f "$COMPOSE_TMP"
-if ! wget -qO "$COMPOSE_TMP" "$sfile/docker-compose.yml"; then
-    rm -f "$COMPOSE_TMP"
-    colorized_echo red "Gagal mengunduh docker-compose.yml dari repository."
-    return 1
-fi
-if [ ! -s "$COMPOSE_TMP" ]; then
-    rm -f "$COMPOSE_TMP"
-    colorized_echo red "docker-compose.yml hasil download kosong."
-    return 1
-fi
-mv -f "$COMPOSE_TMP" /opt/marzban/docker-compose.yml
+wget -O /opt/marzban/docker-compose.yml "$sfile/docker-compose.yml"
 
 # Hapus seluruh bind-mount timezone dari Compose.
 # Timezone host/container tidak dikonfigurasi oleh installer.
@@ -408,19 +356,6 @@ sed -i \
     -e '\#/etc/timezone#d' \
     -e '\#/etc/localtime#d' \
     /opt/marzban/docker-compose.yml
-
-# Validasi Compose segera setelah file selesai diproses.
-if docker compose version >/dev/null 2>&1; then
-    if ! docker compose -f /opt/marzban/docker-compose.yml config >/dev/null 2>&1; then
-        colorized_echo red "docker-compose.yml tidak valid setelah download/normalisasi."
-        return 1
-    fi
-elif command -v docker-compose >/dev/null 2>&1; then
-    if ! docker-compose -f /opt/marzban/docker-compose.yml config >/dev/null 2>&1; then
-        colorized_echo red "docker-compose.yml tidak valid setelah download/normalisasi."
-        return 1
-    fi
-fi
 
 #install assets & core
 mkdir -p /etc/autokill/logs
@@ -1428,530 +1363,133 @@ EOF
 
 stage09() {
     set -e
-    cd /opt/marzban
+cd /opt/marzban
 
-    # =========================================================
-    # STAGE 09 - DATABASE MIGRATION + ADMIN
-    # Non-destructive: never rewrite/delete the existing Compose
-    # merely to select an image.
-    # =========================================================
-    if [ ! -s /opt/marzban/.env ]; then
-        colorized_echo red "File /opt/marzban/.env tidak ditemukan."
-        return 1
-    fi
-    if [ ! -s /opt/marzban/docker-compose.yml ]; then
-        colorized_echo red "File /opt/marzban/docker-compose.yml tidak ditemukan."
-        return 1
-    fi
+# ---------------------------------------------------------
+# Marzban database safety + migration
+# Mencegah error: sqlite3.OperationalError: no such column: admins.users_usage
+# ---------------------------------------------------------
+if [ ! -f /opt/marzban/.env ] || [ ! -f /opt/marzban/docker-compose.yml ]; then
+    colorized_echo red "File konfigurasi Marzban tidak lengkap."
+    return 1
+fi
 
-    if docker compose version >/dev/null 2>&1; then
-        COMPOSE_CMD="docker compose"
-    elif command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE_CMD="docker-compose"
-    else
-        colorized_echo red "Docker Compose tidak ditemukan."
-        return 1
-    fi
+# Pastikan Compose yang dipakai migration bersih dari konfigurasi timezone.
+# Ini juga memperbaiki instalasi lama saat --resume langsung masuk ke Stage 09.
+sed -i \
+    -e '\#/etc/timezone#d' \
+    -e '\#/etc/localtime#d' \
+    /opt/marzban/docker-compose.yml
 
-    local compose="/opt/marzban/docker-compose.yml"
-    local db="/var/lib/marzban/db.sqlite3"
-    local ts
-    ts="$(date +%Y%m%d-%H%M%S)"
-    local backup="${db}.stage09.${ts}.bak"
+# Pastikan image panel dan migration berasal dari upstream Marzban yang sama.
+# Ini mencegah compose custom lama menjalankan kode baru dengan schema lama.
+if grep -qE 'image:[[:space:]]*gozargah/marzban:' /opt/marzban/docker-compose.yml; then
+    sed -i -E 's#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\1latest#' /opt/marzban/docker-compose.yml
+fi
 
-    mkdir -p /var/log
-    touch /var/log/marzban-bootstrap.log
+# Migration tanpa membuat backup database otomatis sebelum migration.
+DB_BACKUP=""
 
-    # ---------------------------------------------------------
-    # Validate Compose BEFORE doing anything destructive.
-    # Do not run sed against the image line.
-    # ---------------------------------------------------------
-    if ! $COMPOSE_CMD -f "$compose" config >/tmp/marzban-compose-config.$$ 2>/tmp/marzban-compose-error.$$; then
-        colorized_echo red "docker-compose.yml tidak valid."
-        cat /tmp/marzban-compose-error.$$ >&2 || true
-        rm -f /tmp/marzban-compose-config.$$ /tmp/marzban-compose-error.$$
-        colorized_echo yellow "Compose tidak disentuh. Perbaiki/restore file Compose lalu jalankan --resume."
-        return 1
-    fi
-    rm -f /tmp/marzban-compose-config.$$ /tmp/marzban-compose-error.$$
+# Set kredensial sementara untuk import admin.
+sed -i "s/# SUDO_USERNAME = \"admin\"/SUDO_USERNAME = \"${userpanel}\"/" /opt/marzban/.env
+sed -i "s/# SUDO_PASSWORD = \"admin\"/SUDO_PASSWORD = \"${passpanel}\"/" /opt/marzban/.env
+sed -i "s/UVICORN_PORT = 7879/UVICORN_PORT = ${port}/" /opt/marzban/.env
 
-    # ---------------------------------------------------------
-    # Database safety. Keep the persistent DB as the ONLY runtime DB.
-    # ---------------------------------------------------------
-    if [ ! -s "$db" ]; then
-        colorized_echo red "Database runtime tidak ditemukan: $db"
-        return 1
-    fi
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_CMD="docker-compose"
+else
+    colorized_echo red "Docker Compose tidak ditemukan."
+    return 1
+fi
 
-    cp -a "$db" "$backup"
-    colorized_echo cyan "Backup database: $backup"
-    colorized_echo cyan "Database runtime: $db"
-
-    # Ensure runtime database is readable.
-    if ! sqlite3 "$db" "PRAGMA integrity_check;" 2>/dev/null | grep -qx "ok"; then
-        colorized_echo red "Database SQLite tidak lolos integrity check."
-        return 1
-    fi
-
-    # ---------------------------------------------------------
-    # Ensure env credentials are available for Marzban.
-    # Do not remove them until admin verification succeeds.
-    # ---------------------------------------------------------
-    if [ -z "${userpanel:-}" ] || [ -z "${passpanel:-}" ]; then
-        [ -s /etc/data/userpanel ] && userpanel="$(cat /etc/data/userpanel)"
-        [ -s /etc/data/passpanel ] && passpanel="$(cat /etc/data/passpanel)"
-    fi
-    if [ -z "${userpanel:-}" ] || [ -z "${passpanel:-}" ]; then
-        colorized_echo red "Kredensial Marzban tidak ditemukan di /etc/data."
-        return 1
-    fi
-
-    # ---------------------------------------------------------
-    # Image handling:
-    # 1. If the Compose image already exists locally, use it.
-    # 2. Otherwise try pulling the exact image declared by Compose.
-    # 3. Never modify docker-compose.yml for this.
-    # ---------------------------------------------------------
-    local compose_image=""
-    compose_image="$(awk '
-        /^[[:space:]]*image:[[:space:]]*/ {
-            sub(/^[[:space:]]*image:[[:space:]]*/, "", $0);
-            gsub(/[[:space:]]+#.*$/, "", $0);
-            print $0;
-            exit
-        }
-    ' "$compose" | tr -d '\r' | xargs || true)"
-
-    if [ -z "$compose_image" ]; then
-        compose_image="ghcr.io/gozargah/marzban:latest"
-    fi
-
-    colorized_echo cyan "Image Marzban: ${compose_image}"
-    colorized_echo cyan "Menyiapkan image Marzban..."
-
-    if docker image inspect "$compose_image" >/dev/null 2>&1; then
-        colorized_echo green "Image Marzban lokal ditemukan; pull dilewati."
-    else
-        if ! $COMPOSE_CMD -f "$compose" pull marzban >>/var/log/marzban-bootstrap.log 2>&1; then
-            colorized_echo yellow "Pull image Compose gagal; mencoba docker pull ${compose_image}..."
-            if ! docker pull "$compose_image" >>/var/log/marzban-bootstrap.log 2>&1; then
-                colorized_echo red "Gagal mengambil image Marzban."
-                return 1
-            fi
-        fi
-    fi
-
-    # Re-validate after any image preparation. This catches accidental/corrupt
-    # Compose changes before a container is created.
-    if ! $COMPOSE_CMD -f "$compose" config >/dev/null 2>&1; then
-        colorized_echo red "docker-compose.yml tidak valid setelah persiapan image."
-        return 1
-    fi
-
-    # Put credentials into env in a resume-safe manner.
-    python3 - "$compose" "$userpanel" "$passpanel" "${port:-12800}" <<'PY'
-import sys
-from pathlib import Path
-
-p = Path("/opt/marzban/.env")
-text = p.read_text()
-
-username, password, port = sys.argv[2], sys.argv[3], sys.argv[4]
-
-def setvar(text, key, value):
-    import re
-    pat = re.compile(r'(?m)^[ \t]*(?:#\s*)?' + re.escape(key) + r'\s*=.*$')
-    line = f'{key} = "{value}"'
-    if pat.search(text):
-        return pat.sub(line, text, count=1)
-    return text.rstrip() + "\n" + line + "\n"
-
-text = setvar(text, "SUDO_USERNAME", username)
-text = setvar(text, "SUDO_PASSWORD", password)
-text = setvar(text, "UVICORN_PORT", port)
-p.write_text(text)
-PY
-
-    # ---------------------------------------------------------
-    # Migration runs against the same Compose image/database.
-    # ---------------------------------------------------------
-    colorized_echo cyan "Menjalankan database migration Marzban..."
-    if ! $COMPOSE_CMD -f "$compose" run --rm --no-deps --entrypoint alembic marzban upgrade head \
-        >>/var/log/marzban-bootstrap.log 2>&1; then
-        colorized_echo yellow "Alembic entrypoint gagal; mencoba Python module alembic..."
-        if ! $COMPOSE_CMD -f "$compose" run --rm --no-deps --entrypoint python marzban -m alembic upgrade head \
-            >>/var/log/marzban-bootstrap.log 2>&1; then
-            colorized_echo red "Migration database Marzban gagal."
-            return 1
-        fi
-    fi
-    colorized_echo green "Database migration berhasil."
-
-    # Start only Marzban here; Nginx remains owned by Stage 05.
-    $COMPOSE_CMD -f "$compose" up -d marzban
-
-    # Wait for container to stay running.
-    local running=0
-    for i in $(seq 1 30); do
-        if $COMPOSE_CMD -f "$compose" ps --status running 2>/dev/null | grep -q marzban; then
-            running=1
-            break
-        fi
-        sleep 2
-    done
-    if [ "$running" -ne 1 ]; then
-        colorized_echo red "Container Marzban tidak berjalan."
-        $COMPOSE_CMD -f "$compose" logs --tail=80 marzban || true
-        return 1
-    fi
-
-    # ---------------------------------------------------------
-    # Admin import: CLI inside container first.
-    # If the bundled CLI has a Pydantic compatibility issue, use a
-    # model-compatible Python fallback based on the actual installed
-    # Marzban modules; never import app.db.session blindly.
-    # ---------------------------------------------------------
-    local admin_log="/var/log/marzban-admin-import.log"
-    : > "$admin_log"
-
-    if $COMPOSE_CMD -f "$compose" exec -T marzban sh -lc \
-        'command -v marzban >/dev/null 2>&1 && marzban cli admin import-from-env -y' \
-        >>"$admin_log" 2>&1; then
-        colorized_echo green "Admin Marzban berhasil di-import."
-    else
-        colorized_echo yellow "CLI import gagal; memakai fallback Admin ORM kompatibel..."
-
-        if ! $COMPOSE_CMD -f "$compose" exec -T \
-            -e ADMIN_USERNAME="$userpanel" \
-            -e ADMIN_PASSWORD="$passpanel" \
-            marzban python - <<'PY' >>"$admin_log" 2>&1
-import os
-from datetime import datetime, timezone
-from passlib.context import CryptContext
-from sqlalchemy import inspect, text
-from config import SQLALCHEMY_DATABASE_URL
-from app.db.base import engine, SessionLocal
-from app.db.models import Admin
-
-username = os.environ["ADMIN_USERNAME"]
-password = os.environ["ADMIN_PASSWORD"]
-
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-db = SessionLocal()
-try:
-    # Confirm model/database alignment before ORM query.
-    cols = {c["name"] for c in inspect(engine).get_columns("admins")}
-    required = {"id", "username", "hashed_password", "created_at", "is_sudo"}
-    missing = required - cols
-    if missing:
-        raise RuntimeError(f"admins schema missing columns: {sorted(missing)}")
-
-    admin = db.query(Admin).filter(Admin.username == username).first()
-    if admin is None:
-        admin = Admin(
-            username=username,
-            hashed_password=pwd.hash(password),
-            created_at=datetime.now(timezone.utc),
-            is_sudo=True,
-        )
-        db.add(admin)
-    else:
-        admin.hashed_password = pwd.hash(password)
-        admin.is_sudo = True
-
-    # Only update optional columns when they actually exist in this schema.
-    if "password_reset_at" in cols and getattr(admin, "password_reset_at", None) is not None:
-        admin.password_reset_at = None
-    db.commit()
-    print("Admin ORM fallback berhasil.")
-finally:
-    db.close()
-PY
-        then
-            colorized_echo red "Gagal membuat/sinkronkan Admin Marzban dari dalam container."
-            colorized_echo yellow "Log: $admin_log"
-            tail -100 "$admin_log" || true
-            return 1
-        fi
-    fi
-
-    # Verify admin using a direct database query, independent of fragile CLI.
-    if ! $COMPOSE_CMD -f "$compose" exec -T \
-        -e ADMIN_USERNAME="$userpanel" marzban python - <<'PY' >>"$admin_log" 2>&1
-import os
-from app.db.base import SessionLocal
-from app.db.models import Admin
-
-db = SessionLocal()
-try:
-    a = db.query(Admin).filter(Admin.username == os.environ["ADMIN_USERNAME"]).first()
-    if not a:
-        raise SystemExit("Admin verification failed")
-    print("Admin verification OK:", a.username, "sudo=", a.is_sudo)
-finally:
-    db.close()
-PY
-    then
-        colorized_echo red "Admin Marzban tidak dapat diverifikasi."
-        tail -100 "$admin_log" || true
-        return 1
-    fi
-
-    # Keep credentials until Stage 10 succeeds.
-    colorized_echo green "Stage 09 selesai: database + Admin Marzban aman."
+# Download image terbaru sebelum migration.
+$COMPOSE_CMD pull marzban >> /var/log/marzban-bootstrap.log 2>&1 || {
+    colorized_echo red "Gagal mengambil image Marzban."
+    return 1
 }
+
+# Jalankan Alembic SEBELUM panel dijalankan.
+# Dengan demikian query admin baru tidak dieksekusi pada schema lama.
+colorized_echo cyan "Menjalankan database migration Marzban..."
+if ! $COMPOSE_CMD run --rm --no-deps --entrypoint alembic marzban upgrade head; then
+    colorized_echo yellow "Perintah alembic langsung gagal, mencoba Python module alembic..."
+    if ! $COMPOSE_CMD run --rm --no-deps --entrypoint python marzban -m alembic upgrade head; then
+        colorized_echo red "Migration database Marzban gagal."
+        return 1
+    fi
+fi
+
+colorized_echo green "Database migration Marzban berhasil."
+
+# Baru jalankan panel setelah schema selesai dimigrasikan.
+$COMPOSE_CMD up -d --remove-orphans
+
+# Tunggu container sehat sebelum import admin.
+for i in $(seq 1 30); do
+    if $COMPOSE_CMD ps --status running 2>/dev/null | grep -q marzban; then
+        break
+    fi
+    sleep 2
+done
+
+# Import admin setelah migration, bukan sebelumnya.
+if command -v marzban >/dev/null 2>&1; then
+    marzban cli admin import-from-env -y || {
+        colorized_echo red "Import admin gagal."
+        $COMPOSE_CMD logs --tail=80 marzban || true
+        return 1
+    }
+fi
+
+# Hapus kredensial sementara dari .env setelah admin berhasil dibuat.
+sed -i "s/SUDO_USERNAME = \"${userpanel}\"/# SUDO_USERNAME = \"admin\"/" /opt/marzban/.env
+sed -i "s/SUDO_PASSWORD = \"${passpanel}\"/# SUDO_PASSWORD = \"admin\"/" /opt/marzban/.env
+
+$COMPOSE_CMD up -d --remove-orphans
+cd
+echo "Tunggu 30 detik untuk generate token API"
+sleep 30s
+
+}
+
 
 stage10() {
     set -e
-
-    # =========================================================
-    # TOKEN API MARZBAN - FINAL FIX
-    # 401 berarti API hidup tetapi kredensial/admin tidak valid.
-    # Pada instalasi Docker, CLI host sering tidak tersedia.
-    # Karena itu Stage 10 memastikan admin dibuat/disinkronkan
-    # melalui CLI DI DALAM container sebelum meminta token.
-    # =========================================================
-    cd /opt/marzban
-
-    if docker compose version >/dev/null 2>&1; then
-        COMPOSE_CMD="docker compose"
-    elif command -v docker-compose >/dev/null 2>&1; then
-        COMPOSE_CMD="docker-compose"
-    else
-        colorized_echo red "Docker Compose tidak ditemukan."
-        return 1
-    fi
-
-    # Resume-safe: ambil kredensial yang tersimpan.
-    [ -s /etc/data/userpanel ] && userpanel="$(cat /etc/data/userpanel)"
-    [ -s /etc/data/passpanel ] && passpanel="$(cat /etc/data/passpanel)"
-    [ -s /etc/data/domain ] && domain="$(cat /etc/data/domain)"
-    [ -s /etc/data/port ] && port="$(cat /etc/data/port)"
-
-    if [ -z "${userpanel:-}" ] || [ -z "${passpanel:-}" ]; then
-        colorized_echo red "Kredensial Marzban tidak ditemukan di /etc/data."
-        return 1
-    fi
-
-    # Stage 10 wajib memakai database persistent yang sama dengan Stage 09.
-    sed -i '/^[[:space:]]*SQLALCHEMY_DATABASE_URL[[:space:]]*=/d' /opt/marzban/.env
-    printf 'SQLALCHEMY_DATABASE_URL = "sqlite:////var/lib/marzban/db.sqlite3"\n' >> /opt/marzban/.env
-
-    # Ambil port Uvicorn yang sebenarnya.
-    API_PORT="$(grep -E '^[[:space:]]*UVICORN_PORT[[:space:]]*=' /opt/marzban/.env 2>/dev/null \
-        | tail -n1 \
-        | sed -E 's/^[^=]+= *//' \
-        | tr -d '"'\''[:space:]')"
-    [[ "$API_PORT" =~ ^[0-9]+$ ]] || API_PORT="${port:-8000}"
-
-    # Pastikan SUDO_USERNAME/SUDO_PASSWORD tersedia sementara di .env.
-    # Ini dipakai oleh `admin import-from-env` untuk membuat atau
-    # menyinkronkan admin sudo. Nilai diambil dari /etc/data.
-    cp -a /opt/marzban/.env "/opt/marzban/.env.stage10.bak"
-
-    sed -i \
-        -e '/^[[:space:]]*SUDO_USERNAME[[:space:]]*=/d' \
-        -e '/^[[:space:]]*SUDO_PASSWORD[[:space:]]*=/d' \
-        /opt/marzban/.env
-
-    {
-        printf 'SUDO_USERNAME = "%s"
-' "$userpanel"
-        printf 'SUDO_PASSWORD = "%s"
-' "$passpanel"
-    } >> /opt/marzban/.env
-
-    colorized_echo cyan "Memastikan Admin Marzban tersedia..."
-
-    # Recreate agar env baru masuk ke container.
-    $COMPOSE_CMD up -d --force-recreate marzban >/dev/null
-
-    # Tunggu container running.
-    for i in $(seq 1 60); do
-        if $COMPOSE_CMD ps --status running marzban 2>/dev/null | grep -q marzban; then
-            break
-        fi
-        sleep 1
-    done
-
-    # Jalankan CLI di DALAM container.
-    # Versi Marzban terbaru memiliki marzban-cli.py; path dicari
-    # agar tidak bergantung pada lokasi WORKDIR image.
-    admin_import_ok=0
-
-    if $COMPOSE_CMD exec -T marzban sh -lc '
-        if command -v marzban >/dev/null 2>&1; then
-            marzban cli admin import-from-env -y
-            exit $?
-        fi
-        CLI_PATH="$(find / -maxdepth 5 -type f -name marzban-cli.py 2>/dev/null | head -n1)"
-        if [ -n "$CLI_PATH" ]; then
-            python "$CLI_PATH" admin import-from-env -y
-            exit $?
-        fi
-        exit 127
-    ' >/var/log/marzban-admin-import.log 2>&1; then
-        admin_import_ok=1
-    fi
-
-    if [ "$admin_import_ok" -ne 1 ]; then
-        colorized_echo yellow "CLI import gagal; memakai fallback CRUD Admin kompatibel..."
-        if $COMPOSE_CMD exec -T \
-            -e "FAIQ_ADMIN_USERNAME=${userpanel}" \
-            -e "FAIQ_ADMIN_PASSWORD=${passpanel}" \
-            marzban python - <<'PY2' >> /var/log/marzban-admin-import.log 2>&1
-import os
-from app.db import GetDB, crud
-from app.db.models import Admin, User
-from app.models.admin import AdminCreate, AdminPartialModify
-
-username = os.environ["FAIQ_ADMIN_USERNAME"]
-password = os.environ["FAIQ_ADMIN_PASSWORD"]
-
-with GetDB() as db:
-    admin = crud.get_admin(db, username=username)
-
-    if admin is not None:
-        payload = AdminPartialModify(
-            password=password,
-            is_sudo=True,
-            telegram_id=admin.telegram_id or "",
-            discord_webhook=admin.discord_webhook or "",
-        )
-        crud.partial_update_admin(db, admin, payload)
-    else:
-        admin = crud.create_admin(
-            db,
-            AdminCreate(
-                username=username,
-                password=password,
-                is_sudo=True,
-                telegram_id="",
-                discord_webhook="",
-            ),
-        )
-
-    db.query(User).filter_by(admin_id=None).update({"admin_id": admin.id})
-    db.commit()
-
-print("ADMIN_SYNC_OK", username)
-PY2
-        then
-            admin_import_ok=1
-        fi
-    fi
-
-    if [ "$admin_import_ok" -ne 1 ]; then
-        colorized_echo red "Gagal membuat/sinkronkan Admin Marzban dari dalam container."
-        colorized_echo yellow "Log: /var/log/marzban-admin-import.log"
-        cat /var/log/marzban-admin-import.log 2>/dev/null || true
-        mv -f "/opt/marzban/.env.stage10.bak" /opt/marzban/.env
-        $COMPOSE_CMD up -d --force-recreate marzban >/dev/null 2>&1 || true
-        return 1
-    fi
-
-    colorized_echo green "Admin Marzban siap."
-
-    # Pastikan API benar-benar siap.
-    colorized_echo cyan "Menunggu API Marzban di 127.0.0.1:${API_PORT}..."
-
-    api_ready=0
-    for i in $(seq 1 60); do
-        if curl -4fsS --connect-timeout 2 --max-time 4 \
-            "http://127.0.0.1:${API_PORT}/api" >/dev/null 2>&1; then
-            api_ready=1
-            break
-        fi
-
-        if curl -4fsS --connect-timeout 2 --max-time 4 \
-            "http://127.0.0.1:${API_PORT}/" >/dev/null 2>&1; then
-            api_ready=1
-            break
-        fi
-        sleep 2
-    done
-
-    if [ "$api_ready" -ne 1 ]; then
-        colorized_echo red "API Marzban belum merespons di 127.0.0.1:${API_PORT}."
-        colorized_echo yellow "Periksa:"
-        echo "  cd /opt/marzban"
-        echo "  docker compose logs --tail=80 marzban"
-        mv -f "/opt/marzban/.env.stage10.bak" /opt/marzban/.env
-        $COMPOSE_CMD up -d --force-recreate marzban >/dev/null 2>&1 || true
-        return 1
-    fi
-
-    colorized_echo green "API Marzban sudah merespons."
-    TOKEN_FILE="/etc/data/token.json"
-    mkdir -p /etc/data
-
-    colorized_echo cyan "Membuat token API Marzban..."
-
-    # Simpan response HTTP agar 401 dapat didiagnosis tanpa
-    # membocorkan password ke terminal.
-    HTTP_CODE="$(
-        curl -4sS \
-            --connect-timeout 10 \
-            --max-time 30 \
-            --retry 3 \
-            --retry-delay 2 \
-            -o "$TOKEN_FILE" \
-            -w '%{http_code}' \
-            -X POST \
-            "http://127.0.0.1:${API_PORT}/api/admin/token" \
-            -H "accept: application/json" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "grant_type=password" \
-            --data-urlencode "username=${userpanel}" \
-            --data-urlencode "password=${passpanel}" \
-            --data-urlencode "scope=" \
-            --data-urlencode "client_id=" \
-            --data-urlencode "client_secret="
-    )"
-
-    if [ "$HTTP_CODE" != "200" ] || ! grep -q '"access_token"' "$TOKEN_FILE" 2>/dev/null; then
-        colorized_echo red "Gagal membuat token API Marzban (HTTP ${HTTP_CODE})."
-        colorized_echo yellow "Response API:"
-        cat "$TOKEN_FILE" 2>/dev/null || true
-        colorized_echo yellow "Admin sudah dibuat/disinkronkan; database tetap aman."
-        # Jangan hapus kredensial dari env sebelum token berhasil.
-        mv -f "/opt/marzban/.env.stage10.bak" /opt/marzban/.env
-        $COMPOSE_CMD up -d --force-recreate marzban >/dev/null 2>&1 || true
-        return 1
-    fi
-
-    chmod 600 "$TOKEN_FILE"
-    colorized_echo green "Token API Marzban berhasil dibuat."
-
-    # Setelah token berhasil, hapus kredensial SUDO dari env.
-    # Ini sesuai perilaku resmi Marzban setelah import admin.
-    mv -f "/opt/marzban/.env.stage10.bak" /opt/marzban/.env
-    $COMPOSE_CMD up -d --force-recreate marzban >/dev/null 2>&1 || true
-
-    command -v neofetch >/dev/null 2>&1 && neofetch || \
-    command -v fastfetch >/dev/null 2>&1 && fastfetch || true
-
-    if [ -f ~/.config/neofetch/config.conf ]; then
-        sed -i '/info title/d' ~/.config/neofetch/config.conf
-        sed -i '/info "Packages" packages/d' ~/.config/neofetch/config.conf
-        sed -i '/info "Shell" shell/d' ~/.config/neofetch/config.conf
-        sed -i '/info "Resolution" resolution/d' ~/.config/neofetch/config.conf
-        sed -i '/info "Memory" memory/d' ~/.config/neofetch/config.conf
-    fi
-
-    command -v profile >/dev/null 2>&1 && profile || true
-
-    echo "Untuk data login dashboard Marzban:" | tee -a /root/log-install.txt
-    echo "=================================" | tee -a /root/log-install.txt
-    echo "URL       : https://${domain}/dashboard" | tee -a /root/log-install.txt
-    echo "username  : ${userpanel}" | tee -a /root/log-install.txt
-    echo "password  : ${passpanel}" | tee -a /root/log-install.txt
-    echo "=================================" | tee -a /root/log-install.txt
-    echo "Script telah berhasil di install" | tee -a /root/log-install.txt
-
-    cd /root
+#instal token
+curl -X 'POST' \
+  "https://${domain}:${port}/api/admin/token" \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d "grant_type=password&username=${userpanel}&password=${passpanel}&scope=&client_id=&client_secret=" > /etc/data/token.json
+cd
+sed -i -e 's/\r$//' /usr/bin/routing
+if command -v neofetch >/dev/null 2>&1; then
+    neofetch
+elif command -v fastfetch >/dev/null 2>&1; then
+    fastfetch
+fi
+if [ -f ~/.config/neofetch/config.conf ]; then
+    sed -i '/info title/d' ~/.config/neofetch/config.conf
+    sed -i '/info "Packages" packages/d' ~/.config/neofetch/config.conf
+    sed -i '/info "Shell" shell/d' ~/.config/neofetch/config.conf
+    sed -i '/info "Resolution" resolution/d' ~/.config/neofetch/config.conf
+    sed -i '/info "Memory" memory/d' ~/.config/neofetch/config.conf
+fi
+command -v profile >/dev/null 2>&1 && profile || true
+echo "Untuk data login dashboard Marzban: " | tee -a /root/log-install.txt
+echo "-=================================-" | tee -a /root/log-install.txt
+echo "URL       : https://${domain}:${port}/dashboard" | tee -a /root/log-install.txt
+echo "username  : ${userpanel}" | tee -a /root/log-install.txt
+echo "password  : ${passpanel}" | tee -a /root/log-install.txt
+echo "-=================================-" | tee -a /root/log-install.txt
+echo "Script telah berhasil di install" | tee -a /root/log-install.txt
+# Install script dipertahankan agar --resume tetap tersedia.
+marzban cli admin delete -u admin -y || log "WARN: cleanup admin dilewati (exit=$?)"
 }
+
+
 
 # =========================================================
 # REBUILD VPS
