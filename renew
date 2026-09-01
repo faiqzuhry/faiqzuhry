@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# Check if the script is run as root
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+
+# Pastikan argumen username dan durasi perpanjangan telah diberikan
+if [ $# -lt 2 ]; then
+    echo "Usage: $0 [username] [durasi_perpanjangan_hari]"
+    exit 1
+fi
+
+# Variabel yang diperlukan
+domain=$(cat /etc/data/domain)
+token=$(cat /etc/data/token.json | jq -r .access_token)
+port=$(netstat -tunlp | grep 'python' | awk '{split($4, a, ":"); print a[2]}')
+
+# Mengambil username dan durasi perpanjangan dari argumen
+username=$1
+exp=$2
+
+# API_URL harus ditempatkan setelah definisi variabel domain
+API_URL="https://${domain}:${port}/api/user/${username}"
+
+# Fetch user data from the API
+response=$(curl -s -X 'GET' \
+  "${API_URL}" \
+  -H 'accept: application/json' \
+  -H "Authorization: Bearer ${token}")
+
+# Periksa apakah username ada dalam respons (sesuaikan dengan struktur respons API Anda)
+if [[ ! "${response}" =~ "\"${username}\"" ]]; then
+    echo "Gagal renew user ${username}. Periksa kembali argumen Anda atau pastikan username sudah terdaftar pada database."
+    exit 1
+fi
+
+# Ambil nilai expire dari respons JSON (sesuaikan dengan struktur respons API Anda)
+current_expiration_epoch=$(jq -r ".expire" <<< "${response}")
+
+# Hitung waktu expire yang baru
+new_expiration_epoch=$((current_expiration_epoch + (exp * 86400)))
+
+# API call untuk memperbarui waktu expire user
+curl -s -X 'PUT' \
+  "${API_URL}" \
+  -H 'accept: application/json' \
+  -H "Authorization: Bearer ${token}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "proxies": {},
+    "inbounds": {},
+    "expire": '"${new_expiration_epoch}"'
+  }' > /dev/null
+
+# Periksa apakah permintaan berhasil
+if [ $? -eq 0 ]; then
+    clear
+    echo "Masa aktif untuk ${username} telah berhasil diperpanjang selama ${exp} hari."
+    echo "-=======================-"
+    echo "Masa Aktif yang baru untuk user ${username}"
+
+    # Format waktu baru ke dalam bentuk yang lebih bersahabat
+    new_expiration_date=$(date -d "@${new_expiration_epoch}" +"%Y-%m-%d %H:%M:%S")
+    echo "Expired pada: ${new_expiration_date}"
+else
+    echo "Gagal renew user ${username}. Periksa kembali argumen Anda atau pastikan username sudah terdaftar pada database."
+    exit 1
+fi

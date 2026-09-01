@@ -1,0 +1,230 @@
+#!/bin/bash
+
+# =========================================================
+# Marzban Expired Auto Delete - 7 Hari
+#
+# Fungsi:
+#   - Mendeteksi user Marzban dengan status expired
+#   - Tidak langsung menghapus user saat baru expired
+#   - User baru dihapus setelah 7 x 24 jam sejak nilai .expire
+#   - Menampilkan hasil saat dijalankan manual
+#   - Menulis log ke /etc/data/log-expired.txt
+#   - Aman untuk dijalankan dari cron
+#
+# Command:
+#   expired
+#   check_expired
+# =========================================================
+
+set -u
+
+# ---------- Root check ----------
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[ERROR] Script harus dijalankan sebagai root."
+    exit 1
+fi
+
+# ---------- Dependencies ----------
+for cmd in curl jq date; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "[ERROR] Dependensi tidak ditemukan: $cmd"
+        exit 1
+    fi
+done
+
+# ---------- Configuration ----------
+DOMAIN=$(cat /etc/data/domain 2>/dev/null || true)
+PORT=$(cat /etc/data/port 2>/dev/null || true)
+TOKEN=$(jq -r '.access_token // empty' /etc/data/token.json 2>/dev/null || true)
+
+RETENTION_DAYS=7
+RETENTION_SECONDS=$((RETENTION_DAYS * 86400))
+LOG_FILE="/etc/data/log-expired.txt"
+
+if [ -z "$DOMAIN" ]; then
+    echo "[ERROR] /etc/data/domain tidak ditemukan atau kosong."
+    exit 1
+fi
+
+if [ -z "$TOKEN" ]; then
+    echo "[ERROR] Access token Marzban tidak ditemukan di /etc/data/token.json."
+    exit 1
+fi
+
+# Gunakan port dari installer jika tersedia.
+# Jika kosong, fallback ke HTTPS standar melalui domain.
+if [[ "$PORT" =~ ^[0-9]+$ ]]; then
+    API_BASE="https://${DOMAIN}:${PORT}"
+else
+    API_BASE="https://${DOMAIN}"
+fi
+
+mkdir -p /etc/data
+touch "$LOG_FILE"
+chmod 600 "$LOG_FILE" 2>/dev/null || true
+
+# ---------- Helpers ----------
+log_file() {
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+}
+
+format_date() {
+    local epoch="$1"
+    date -d "@$epoch" '+%d-%m-%Y %H:%M:%S' 2>/dev/null || echo "-"
+}
+
+# ---------- Main ----------
+check_expired() {
+    local current_epoch
+    current_epoch=$(date +%s)
+
+    echo ""
+    echo "=================================================="
+    echo "        MARZBAN EXPIRED CHECK - 7 HARI"
+    echo "=================================================="
+    echo "[INFO] API      : ${API_BASE}"
+    echo "[INFO] Waktu    : $(date '+%d-%m-%Y %H:%M:%S')"
+    echo "[INFO] Retensi  : ${RETENTION_DAYS} hari setelah expired"
+    echo "[INFO] Mengambil daftar user..."
+    echo ""
+
+    # Ambil semua user. Tidak bergantung pada endpoint ?status=expired
+    # sehingga nilai .expire tetap tersedia untuk menghitung 7 hari.
+    local response http_code body_file
+    body_file=$(mktemp)
+
+    http_code=$(curl -ksS \
+        --connect-timeout 10 \
+        --max-time 30 \
+        -o "$body_file" \
+        -w '%{http_code}' \
+        -X GET \
+        "${API_BASE}/api/users" \
+        -H 'accept: application/json' \
+        -H "Authorization: Bearer ${TOKEN}")
+
+    response=$(cat "$body_file" 2>/dev/null || true)
+    rm -f "$body_file"
+
+    if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+        echo "[ERROR] GET /api/users gagal. HTTP ${http_code}"
+        [ -n "$response" ] && echo "[API] $response"
+        log_file "GET /api/users GAGAL HTTP ${http_code}"
+        return 1
+    fi
+
+    if ! echo "$response" | jq -e '.users and (.users | type == "array")' >/dev/null 2>&1; then
+        echo "[ERROR] Respons API Marzban bukan format users yang valid."
+        echo "[API] $(echo "$response" | head -c 500)"
+        log_file "Respons GET /api/users tidak valid"
+        return 1
+    fi
+
+    local found_expired=0
+    local deleted=0
+    local waiting=0
+    local failed=0
+
+    while IFS= read -r user_info; do
+        [ -z "$user_info" ] && continue
+
+        local username status expire protocol
+        username=$(echo "$user_info" | jq -r '.username // empty')
+        status=$(echo "$user_info" | jq -r '.status // empty')
+        expire=$(echo "$user_info" | jq -r '.expire // empty')
+        protocol=$(echo "$user_info" | jq -r '.proxies | keys_unsorted[0] // "unknown"')
+
+        [ -n "$username" ] || continue
+
+        # Hanya proses user yang memang expired.
+        if [ "$status" != "expired" ]; then
+            continue
+        fi
+
+        found_expired=$((found_expired + 1))
+
+        # Marzban menggunakan Unix timestamp untuk expire.
+        if ! [[ "$expire" =~ ^[0-9]+$ ]]; then
+            echo "[WARN] ${username} -> status expired tetapi nilai expire tidak valid. SKIP."
+            log_file "SKIP ${username} (${protocol}) - expire tidak valid: ${expire}"
+            continue
+        fi
+
+        local delete_after remaining expired_date delete_date
+        delete_after=$((expire + RETENTION_SECONDS))
+        expired_date=$(format_date "$expire")
+        delete_date=$(format_date "$delete_after")
+
+        echo "[EXPIRED] ${username}"
+        echo "          Protocol : ${protocol}"
+        echo "          Expired  : ${expired_date}"
+
+        if (( current_epoch < delete_after )); then
+            remaining=$((delete_after - current_epoch))
+            local days hours minutes
+            days=$((remaining / 86400))
+            hours=$(((remaining % 86400) / 3600))
+            minutes=$(((remaining % 3600) / 60))
+
+            waiting=$((waiting + 1))
+            echo "          Delete   : ${delete_date}"
+            echo "          Status   : MENUNGGU (${days}h ${hours}j ${minutes}m lagi)"
+            log_file "WAIT ${username} (${protocol}) - expired ${expired_date}; delete ${delete_date}"
+            echo ""
+            continue
+        fi
+
+        echo "          Delete   : ${delete_date}"
+        echo "          Status   : WAKTUNYA DIHAPUS"
+
+        local delete_body delete_code
+        delete_body=$(mktemp)
+
+        delete_code=$(curl -ksS \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -o "$delete_body" \
+            -w '%{http_code}' \
+            -X DELETE \
+            "${API_BASE}/api/user/${username}" \
+            -H 'accept: application/json' \
+            -H "Authorization: Bearer ${TOKEN}")
+
+        local delete_response
+        delete_response=$(cat "$delete_body" 2>/dev/null || true)
+        rm -f "$delete_body"
+
+        case "$delete_code" in
+            200|204)
+                deleted=$((deleted + 1))
+                echo "          DELETE   : BERHASIL (HTTP ${delete_code})"
+                log_file "DELETE ${username} (${protocol}) - OK HTTP ${delete_code}; expired ${expired_date}"
+                ;;
+            *)
+                failed=$((failed + 1))
+                echo "          DELETE   : GAGAL (HTTP ${delete_code})"
+                [ -n "$delete_response" ] && echo "          API      : ${delete_response}"
+                log_file "DELETE ${username} (${protocol}) - GAGAL HTTP ${delete_code}; ${delete_response}"
+                ;;
+        esac
+
+        echo ""
+    done < <(echo "$response" | jq -c '.users[]')
+
+    echo "=================================================="
+    echo "[INFO] User expired ditemukan : ${found_expired}"
+    echo "[INFO] Masih menunggu 7 hari  : ${waiting}"
+    echo "[INFO] Berhasil dihapus       : ${deleted}"
+    echo "[INFO] Gagal dihapus          : ${failed}"
+    echo "[INFO] Log                    : ${LOG_FILE}"
+    echo "=================================================="
+    echo ""
+
+    log_file "SELESAI - expired=${found_expired}, waiting=${waiting}, deleted=${deleted}, failed=${failed}"
+
+    # Jangan membuat cron menganggap gagal hanya karena ada satu DELETE gagal.
+    return 0
+}
+
+# ---------- Run ----------
+check_expired

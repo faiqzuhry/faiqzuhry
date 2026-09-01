@@ -1,0 +1,515 @@
+#!/bin/bash
+set -u
+
+# ============================================================
+# MUMMY - Backup & Restore Menu
+# ============================================================
+
+DATA_DIR="/etc/data"
+CONFIG_FILE="${DATA_DIR}/telegram_config.conf"
+# SINGLE SOURCE OF TRUTH: BWBOT reads botToken/chatId from this file.
+PASS_FILE="${DATA_DIR}/passbackup"
+NAME_FILE="${DATA_DIR}/nama"
+FILE_ID_FILE="${DATA_DIR}/file_id.txt"
+LOG_FILE="${DATA_DIR}/log-backup.txt"
+BACKUP_DIR="/root/backup"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+
+mkdir -p "$DATA_DIR"
+chmod 700 "$DATA_DIR"
+
+green() { printf '\033[32;1m%s\033[0m\n' "$*"; }
+red()   { printf '\033[31;1m%s\033[0m\n' "$*"; }
+
+print_header() {
+    clear
+    echo "**************************************************"
+    echo "*                                                *"
+    echo "*       Backup and Restore Options Menu          *"
+    echo "*                                                *"
+    echo "**************************************************"
+    echo
+}
+
+save_telegram_config() {
+    local bot chat
+    read -r -p "Enter your Telegram bot token: " bot
+    read -r -p "Enter your Telegram user ID: " chat
+
+    if [ -z "$bot" ] || [ -z "$chat" ]; then
+        red "Bot token dan user ID tidak boleh kosong."
+        return 1
+    fi
+
+    umask 077
+    {
+        printf 'botToken=%q\n' "$bot"
+        printf 'chatId=%q\n' "$chat"
+    } > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
+    green "Konfigurasi Telegram berhasil disimpan."
+}
+
+load_telegram_config() {
+    if [ ! -s "$CONFIG_FILE" ]; then
+        echo "Konfigurasi Telegram belum tersedia."
+        save_telegram_config || return 1
+    fi
+
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+
+    if [ -z "${botToken:-}" ] || [ -z "${chatId:-}" ]; then
+        red "Konfigurasi Telegram tidak valid."
+        return 1
+    fi
+}
+
+get_server_name() {
+    local n="server"
+    if [ -s "$NAME_FILE" ]; then
+        n="$(tr -d '\r\n' < "$NAME_FILE")"
+    fi
+    n="${n//[^a-zA-Z0-9._-]/_}"
+    [ -n "$n" ] || n="server"
+    printf '%s' "$n"
+}
+
+get_public_ip() {
+    local ip
+    ip="$(curl -4fsS --connect-timeout 8 --max-time 15 https://api.ipify.org 2>/dev/null || true)"
+    [ -n "$ip" ] && printf '%s' "$ip" || printf 'Unknown'
+}
+
+html_escape() {
+    local v="$1"
+    v="${v//&/&amp;}"
+    v="${v//</&lt;}"
+    v="${v//>/&gt;}"
+    v="${v//\"/&quot;}"
+    printf '%s' "$v"
+}
+
+check_requirements() {
+    local missing=()
+    for cmd in curl jq zip unzip docker crontab; do
+        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        red "Command belum tersedia: ${missing[*]}"
+        return 1
+    fi
+}
+
+backup_and_send_telegram() {
+    print_header
+
+    load_telegram_config || return 1
+
+    if [ ! -s "$PASS_FILE" ]; then
+        red "Password backup tidak ditemukan: $PASS_FILE"
+        return 1
+    fi
+
+    check_requirements || return 1
+
+    local InputPass nama tanggal tanggal2 waktu curdir response ok file_id
+    local IP_ADDRESS CLIENT_NAME_ESCAPED IP_ADDRESS_ESCAPED CAPTION
+    InputPass="$(head -n 1 "$PASS_FILE")"
+    nama="$(get_server_name)"
+    tanggal="$(date '+%m-%d-%Y')"
+    tanggal2="$(date '+%m%d%Y')"
+    waktu="$(date '+%H%M%S')"
+
+    if [ ! -d /opt/marzban ] || [ ! -f /var/lib/marzban/db.sqlite3 ]; then
+        red "Data Marzban tidak lengkap. Backup dibatalkan."
+        return 1
+    fi
+
+    rm -rf "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
+
+    echo "Memulai Backup..."
+    cp -a /opt/marzban "$BACKUP_DIR/" || { red "Gagal backup /opt/marzban."; rm -rf "$BACKUP_DIR"; return 1; }
+    cp -a /var/lib/marzban/db.sqlite3 "$BACKUP_DIR/" || { red "Gagal backup database."; rm -rf "$BACKUP_DIR"; return 1; }
+
+    for item in \
+        /var/lib/marzban/xray_config.json \
+        /var/lib/marzban/max_ips.conf \
+        /var/www/html \
+        "$CONFIG_FILE" \
+        "$FILE_ID_FILE"
+    do
+        [ -e "$item" ] && cp -a "$item" "$BACKUP_DIR/" || true
+    done
+
+    curdir="/root/${nama}_${waktu}_${tanggal2}.zip"
+    rm -f "$curdir"
+
+    if ! (cd /root && zip -r -q -P "$InputPass" "$(basename "$curdir")" "$(basename "$BACKUP_DIR")"); then
+        red "Gagal membuat file ZIP."
+        rm -rf "$BACKUP_DIR"
+        return 1
+    fi
+
+    # Informasi yang ditampilkan pada caption Telegram.
+    IP_ADDRESS="$(get_public_ip)"
+    CLIENT_NAME="$nama"
+
+    # Escape HTML agar nama client/IP tidak merusak parse_mode=HTML.
+    CLIENT_NAME_ESCAPED="$(html_escape "$CLIENT_NAME")"
+    IP_ADDRESS_ESCAPED="$(html_escape "$IP_ADDRESS")"
+
+    CAPTION="$(printf '%s\n' \
+        '=================================' \
+        '『 Successfully backup your Database 』' \
+        '=================================' \
+        "◈ Client  : <code>${CLIENT_NAME_ESCAPED}</code>" \
+        "◈ IP VPS  : <code>${IP_ADDRESS_ESCAPED}</code>" \
+        '◈ Version  : 3.1 Stable' \
+        '◈ Built By  : @Faiqzuhry' \
+        '=================================')"
+
+    echo "Mengirim file backup ke bot Telegram..."
+
+    response="$(
+        curl -fsS --connect-timeout 15 --max-time 600 \
+            -F "chat_id=${chatId}" \
+            -F "document=@${curdir}" \
+            -F "caption=${CAPTION}" \
+            -F "parse_mode=HTML" \
+            "https://api.telegram.org/bot${botToken}/sendDocument" 2>/dev/null
+    )"
+    local curl_status=$?
+
+    ok="$(printf '%s' "$response" | jq -r '.ok // false' 2>/dev/null)"
+    file_id="$(printf '%s' "$response" | jq -r '.result.document.file_id // empty' 2>/dev/null)"
+
+    if [ "$curl_status" -ne 0 ] || [ "$ok" != "true" ] || [ -z "$file_id" ]; then
+        red "Gagal mengirim backup ke Telegram."
+        [ -n "$response" ] && printf '%s\n' "$response"
+        red "File backup tetap disimpan di: $curdir"
+        rm -rf "$BACKUP_DIR"
+        return 1
+    fi
+
+    {
+        printf '### %s_%s_%s\n' "$nama" "$waktu" "$tanggal"
+        printf 'File ID: %s\n' "$file_id"
+        printf 'Server telah berhasil backup data pada tanggal %s pukul %s.\n' "$tanggal" "$waktu"
+    } >> "$FILE_ID_FILE"
+
+    printf '%s - Backup berhasil dikirim: %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$curdir" >> "$LOG_FILE"
+
+    rm -rf "$BACKUP_DIR"
+    rm -f "$curdir"
+
+    green "Backup berhasil dibuat dan dikirim ke Telegram."
+    echo "File ID: $file_id"
+
+    command -v profile >/dev/null 2>&1 && profile || true
+}
+
+set_backup_timer() {
+    print_header
+    echo "1. Set Daily Backup Timer"
+    echo "2. Set Weekly Backup Timer"
+    echo "3. Set Monthly Backup Timer"
+    echo "4. Back to Main Menu"
+    read -r -p "Enter your choice (1-4): " choice
+
+    local t h m d
+    case "$choice" in
+        1)
+            read -r -p "Daily time (HH:MM): " t
+            if [[ ! "$t" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then red "Format waktu salah."; return 1; fi
+            h="${t%:*}"; m="${t#*:}"
+            (crontab -l 2>/dev/null | grep -vF '/usr/bin/backup daily'; echo "$m $h * * * /usr/bin/backup daily") | crontab -
+            ;;
+        2)
+            read -r -p "Day (0-6, Sunday-Saturday): " d
+            read -r -p "Weekly time (HH:MM): " t
+            if [[ ! "$d" =~ ^[0-6]$ || ! "$t" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then red "Input tidak valid."; return 1; fi
+            h="${t%:*}"; m="${t#*:}"
+            (crontab -l 2>/dev/null | grep -vF '/usr/bin/backup weekly'; echo "$m $h * * $d /usr/bin/backup weekly") | crontab -
+            ;;
+        3)
+            read -r -p "Day of month (1-31): " d
+            read -r -p "Monthly time (HH:MM): " t
+            if [[ ! "$d" =~ ^([1-9]|[12][0-9]|3[01])$ || ! "$t" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then red "Input tidak valid."; return 1; fi
+            h="${t%:*}"; m="${t#*:}"
+            (crontab -l 2>/dev/null | grep -vF '/usr/bin/backup monthly'; echo "$m $h $d * * /usr/bin/backup monthly") | crontab -
+            ;;
+        4) return 0 ;;
+        *) red "Pilihan tidak valid."; return 1 ;;
+    esac
+
+    green "Backup timer berhasil disimpan."
+}
+
+remove_backup_timer() {
+    print_header
+    echo "1. Remove Daily Backup Timer"
+    echo "2. Remove Weekly Backup Timer"
+    echo "3. Remove Monthly Backup Timer"
+    echo "4. Back to Main Menu"
+    read -r -p "Enter your choice (1-4): " choice
+
+    case "$choice" in
+        1) (crontab -l 2>/dev/null | grep -vF '/usr/bin/backup daily') | crontab - ;;
+        2) (crontab -l 2>/dev/null | grep -vF '/usr/bin/backup weekly') | crontab - ;;
+        3) (crontab -l 2>/dev/null | grep -vF '/usr/bin/backup monthly') | crontab - ;;
+        4) return 0 ;;
+        *) red "Pilihan tidak valid."; return 1 ;;
+    esac
+    green "Backup timer berhasil dihapus."
+}
+
+restore_from_telegram() {
+    print_header
+
+    load_telegram_config || return 1
+
+    # Restore lintas VPS TIDAK menggunakan passbackup/File ID milik VPS baru.
+    # User memasukkan File ID backup lama dan password yang dipakai saat backup lama.
+    local FILE_ID InputPass FILE_PATH TMP_DIR ZIP_FILE ROOT DB_FILE
+    local SAFETY_DIR COMPOSE_DIR CONTAINER_NAMES
+
+    echo "=== RESTORE BACKUP DARI VPS LAMA ==="
+    echo
+    echo "Masukkan File ID dari backup Telegram VPS lama."
+    echo "Contoh: 1234567890"
+    read -r -p "File ID: " FILE_ID
+
+    if [ -z "$FILE_ID" ]; then
+        red "File ID tidak boleh kosong."
+        return 1
+    fi
+
+    read -r -s -p "Password ZIP backup VPS lama: " InputPass
+    echo
+
+    if [ -z "$InputPass" ]; then
+        red "Password backup tidak boleh kosong."
+        return 1
+    fi
+
+    for cmd in curl jq unzip docker; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            red "Command belum tersedia: $cmd"
+            return 1
+        fi
+    done
+
+    TMP_DIR="$(mktemp -d /root/mummy-restore.XXXXXX)"
+    ZIP_FILE="$TMP_DIR/backup.zip"
+    SAFETY_DIR="/root/mummy-restore-safety-$(date +%Y%m%d-%H%M%S)"
+
+    cleanup_restore() {
+        rm -rf "$TMP_DIR"
+    }
+    trap cleanup_restore RETURN
+
+    echo
+    echo "[1/6] Memeriksa File ID Telegram..."
+
+    local TG_RESPONSE
+    TG_RESPONSE="$(
+        curl -fsS --connect-timeout 15 --max-time 60 \
+            "https://api.telegram.org/bot${botToken}/getFile?file_id=${FILE_ID}" \
+            2>/dev/null
+    )" || {
+        red "Gagal menghubungi Telegram atau File ID tidak valid."
+        return 1
+    }
+
+    if [ "$(printf '%s' "$TG_RESPONSE" | jq -r '.ok // false')" != "true" ]; then
+        red "Telegram menolak File ID tersebut."
+        printf '%s\n' "$TG_RESPONSE"
+        return 1
+    fi
+
+    FILE_PATH="$(printf '%s' "$TG_RESPONSE" | jq -r '.result.file_path // empty')"
+
+    if [ -z "$FILE_PATH" ]; then
+        red "File path Telegram tidak ditemukan."
+        return 1
+    fi
+
+    echo "[2/6] Mengunduh backup lama..."
+
+    if ! curl -fsS --connect-timeout 15 --max-time 900 \
+        -o "$ZIP_FILE" \
+        "https://api.telegram.org/file/bot${botToken}/${FILE_PATH}"; then
+        red "Gagal mengunduh backup dari Telegram."
+        return 1
+    fi
+
+    [ -s "$ZIP_FILE" ] || {
+        red "File backup kosong."
+        return 1
+    }
+
+    echo "[3/6] Memeriksa password dan isi ZIP..."
+
+    if ! unzip -t -q -P "$InputPass" "$ZIP_FILE" >/dev/null 2>&1; then
+        red "Password SALAH atau file ZIP rusak."
+        red "Gunakan password yang dipakai di VPS LAMA saat membuat backup."
+        return 1
+    fi
+
+    mkdir -p "$TMP_DIR/extracted"
+
+    if ! unzip -q -P "$InputPass" "$ZIP_FILE" -d "$TMP_DIR/extracted"; then
+        red "Gagal mengekstrak backup."
+        return 1
+    fi
+
+    # Cari database di mana pun posisinya di dalam backup.
+    DB_FILE="$(find "$TMP_DIR/extracted" -type f -name 'db.sqlite3' -print -quit)"
+
+    if [ -z "$DB_FILE" ] || [ ! -f "$DB_FILE" ]; then
+        red "db.sqlite3 tidak ditemukan di dalam backup VPS lama."
+        return 1
+    fi
+
+    ROOT="$(dirname "$DB_FILE")"
+
+    echo "[4/6] Membuat safety backup database VPS baru..."
+
+    mkdir -p "$SAFETY_DIR"
+
+    if [ -f /var/lib/marzban/db.sqlite3 ]; then
+        cp -a /var/lib/marzban/db.sqlite3 "$SAFETY_DIR/db.sqlite3" || {
+            red "Gagal membuat safety backup database."
+            rm -rf "$SAFETY_DIR"
+            return 1
+        }
+    fi
+
+    # Hentikan container Marzban sebelum mengganti database.
+    # Ini mencegah SQLite sedang ditulis ketika file diganti.
+    COMPOSE_DIR=""
+
+    if [ -d /opt/marzban ]; then
+        if [ -f /opt/marzban/docker-compose.yml ] || [ -f /opt/marzban/compose.yml ]; then
+            COMPOSE_DIR="/opt/marzban"
+        fi
+    fi
+
+    if [ -n "$COMPOSE_DIR" ]; then
+        echo "[5/6] Menghentikan Marzban sementara..."
+        (
+            cd "$COMPOSE_DIR" &&
+            docker compose stop marzban 2>/dev/null || docker compose stop 2>/dev/null
+        ) || true
+    fi
+
+    mkdir -p /var/lib/marzban
+
+    echo "Mengembalikan database..."
+    if ! cp -a "$DB_FILE" /var/lib/marzban/db.sqlite3; then
+        red "Gagal mengembalikan db.sqlite3."
+        return 1
+    fi
+
+    chmod 600 /var/lib/marzban/db.sqlite3 2>/dev/null || true
+
+    # Restore konfigurasi data jika tersedia.
+    for file in xray_config.json max_ips.conf; do
+        local FOUND
+        FOUND="$(find "$TMP_DIR/extracted" -type f -name "$file" -print -quit)"
+        if [ -n "$FOUND" ]; then
+            cp -a "$FOUND" "/var/lib/marzban/$file" || {
+                red "Gagal mengembalikan $file."
+                return 1
+            }
+        fi
+    done
+
+    # JANGAN menimpa /opt/marzban pada VPS baru.
+    # Compose/.env/config VPS baru harus tetap dipakai.
+    # Yang dipindahkan lintas VPS adalah data/database.
+
+    echo "Menjalankan Marzban kembali..."
+
+    if [ -n "$COMPOSE_DIR" ]; then
+        (
+            cd "$COMPOSE_DIR" &&
+            docker compose up -d
+        ) || {
+            red "Marzban gagal dijalankan setelah restore."
+            red "Safety backup tersimpan di: $SAFETY_DIR"
+            return 1
+        }
+    else
+        red "Directory Docker Compose Marzban tidak ditemukan di /opt/marzban."
+        red "Database sudah direstore, tetapi Marzban belum direstart."
+        red "Safety backup tersimpan di: $SAFETY_DIR"
+        return 1
+    fi
+
+    sleep 5
+
+    CONTAINER_NAMES="$(
+        docker ps --format '{{.Names}}' 2>/dev/null |
+        grep -Ei '(^|[-_])marzban($|[-_])' || true
+    )"
+
+    if [ -z "$CONTAINER_NAMES" ]; then
+        red "Database sudah direstore, tetapi container Marzban belum aktif."
+        red "Safety backup tersimpan di: $SAFETY_DIR"
+        red "Gunakan: cd /opt/marzban && docker compose ps"
+        return 1
+    fi
+
+    # Pastikan database SQLite bisa dibaca.
+    if ! sqlite3 /var/lib/marzban/db.sqlite3 "PRAGMA integrity_check;" 2>/dev/null |
+        grep -qx 'ok'; then
+        red "PERINGATAN: integrity_check database tidak dapat dikonfirmasi."
+        red "Safety backup tersimpan di: $SAFETY_DIR"
+        return 1
+    fi
+
+    rm -rf "$SAFETY_DIR"
+
+    green "=============================================="
+    green " RESTORE VPS LAMA BERHASIL"
+    green " Database Marzban sudah dipindahkan ke VPS baru."
+    green "=============================================="
+
+    command -v profile >/dev/null 2>&1 && profile || true
+}
+
+# Support cron calls without opening the interactive menu.
+case "${1:-}" in
+    daily|weekly|monthly)
+        backup_and_send_telegram
+        exit $?
+        ;;
+esac
+
+while :; do
+    print_header
+    echo "Main Menu:"
+    echo "1. Backup and Send to Telegram"
+    echo "2. Set Backup Timer"
+    echo "3. Remove Backup Timer"
+    echo "4. Restore from Telegram"
+    echo "5. Exit"
+    read -r -p "Enter your choice (1-5): " choice
+
+    case "$choice" in
+        1) backup_and_send_telegram ;;
+        2) set_backup_timer ;;
+        3) remove_backup_timer ;;
+        4) restore_from_telegram ;;
+        5) exit 0 ;;
+        *) red "Invalid choice. Try again." ;;
+    esac
+done

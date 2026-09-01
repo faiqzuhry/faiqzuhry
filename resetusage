@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# Check if the script is run as root
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+
+# Pastikan argumen username telah diberikan
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 [username]"
+    exit 1
+fi
+
+#variabel yang diperlukan
+domain=$(cat /etc/data/domain)
+token=$(cat /etc/data/token.json | jq -r .access_token)
+port=$(netstat -tunlp | grep 'python' | awk '{split($4, a, ":"); print a[2]}')
+
+# Mengambil username dari argumen
+username=$1
+
+# Mengirim permintaan POST menggunakan curl
+curl -s -X 'POST' \
+  "https://${domain}:${port}/api/user/${username}/reset" \
+  -H 'accept: application/json' \
+  -H "Authorization: Bearer ${token}" \
+  -d '' > /dev/null
+
+# Memeriksa apakah reset usage data berhasil
+clear
+if [ $? -eq 0 ]; then
+    echo "User ${username} telah berhasil di-Reset Data."
+else
+    echo "Gagal reset data user ${username}. Periksa kembali argumen dan token Anda atau cek username sudah terdaftar pada database."
+fi
+

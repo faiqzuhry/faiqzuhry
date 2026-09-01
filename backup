@@ -1,0 +1,319 @@
+#!/bin/bash
+set -u
+
+# ============================================================
+# MUMMY - BACKUP
+# Backup data Marzban + web + config, lalu kirim ke Telegram.
+# ============================================================
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+clear
+
+tanggal="$(date '+%m-%d-%Y')"
+tanggal2="$(date '+%m%d%Y')"
+waktu="$(date '+%H%M%S')"
+
+DATA_DIR="/etc/data"
+CONFIG_FILE="${DATA_DIR}/telegram_config.conf"
+BACKUP_DIR="/root/backup"
+NAME_FILE="${DATA_DIR}/nama"
+PASS_FILE="${DATA_DIR}/passbackup"
+FILE_ID_FILE="${DATA_DIR}/file_id.txt"
+LOG_FILE="${DATA_DIR}/log-backup.txt"
+
+mkdir -p "$DATA_DIR"
+
+green() { printf '\033[32;1m%s\033[0m\n' "$*"; }
+red()   { printf '\033[31;1m%s\033[0m\n' "$*"; }
+
+# ------------------------------------------------------------
+# Telegram configuration
+# ------------------------------------------------------------
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Konfigurasi Telegram belum tersedia."
+    read -r -p "Enter your Telegram bot token: " botToken
+    read -r -p "Enter your Telegram user ID: " chatId
+
+    if [ -z "$botToken" ] || [ -z "$chatId" ]; then
+        red "Bot token dan user ID tidak boleh kosong."
+        exit 1
+    fi
+
+    umask 077
+    {
+        printf 'botToken=%q\n' "$botToken"
+        printf 'chatId=%q\n' "$chatId"
+    } > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
+
+    green "Konfigurasi Telegram berhasil disimpan."
+    echo "Jalankan backup lagi untuk memulai proses backup."
+    exit 0
+fi
+
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+
+if [ -z "${botToken:-}" ] || [ -z "${chatId:-}" ]; then
+    red "telegram_config.conf tidak memiliki botToken/chatId yang valid."
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# Server name
+# ------------------------------------------------------------
+nama="server"
+if [ -s "$NAME_FILE" ]; then
+    nama="$(tr -d '\r\n' < "$NAME_FILE")"
+fi
+nama="${nama//[^a-zA-Z0-9._-]/_}"
+[ -n "$nama" ] || nama="server"
+
+# ------------------------------------------------------------
+# Backup password
+# ------------------------------------------------------------
+if [ ! -s "$PASS_FILE" ]; then
+    red "File password backup tidak ditemukan: $PASS_FILE"
+    exit 1
+fi
+
+InputPass="$(head -n 1 "$PASS_FILE")"
+if [ -z "$InputPass" ]; then
+    red "Password backup kosong."
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# Required commands
+# ------------------------------------------------------------
+missing=()
+for cmd in zip curl jq; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+done
+
+if [ "${#missing[@]}" -gt 0 ]; then
+    red "Command berikut belum tersedia: ${missing[*]}"
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# Sources to backup
+# ------------------------------------------------------------
+sources=(
+    "/opt/marzban"
+    "/var/lib/marzban/xray_config.json"
+    "/var/lib/marzban/max_ips.conf"
+    "/var/lib/marzban/db.sqlite3"
+    "/var/www/html"
+    "$CONFIG_FILE"
+    "$FILE_ID_FILE"
+)
+
+echo "Memulai Backup"
+echo "[ INFO ] Memeriksa data..."
+
+# Jangan menganggap backup gagal hanya karena file opsional tidak ada.
+# Tetapi /opt/marzban dan database utama perlu diperiksa.
+required_sources=(
+    "/opt/marzban"
+    "/var/lib/marzban/db.sqlite3"
+)
+
+for item in "${required_sources[@]}"; do
+    if [ ! -e "$item" ]; then
+        red "Data penting tidak ditemukan: $item"
+        exit 1
+    fi
+done
+
+rm -rf "$BACKUP_DIR"
+mkdir -p "$BACKUP_DIR"
+
+cleanup() {
+    rm -rf "$BACKUP_DIR"
+}
+trap cleanup EXIT
+
+echo "[ INFO ] Menyalin data..."
+
+# cp -a mempertahankan permission, symlink, timestamp, dll.
+cp -a "/opt/marzban" "$BACKUP_DIR/"
+
+for item in \
+    "/var/lib/marzban/xray_config.json" \
+    "/var/lib/marzban/max_ips.conf" \
+    "/var/lib/marzban/db.sqlite3" \
+    "$CONFIG_FILE" \
+    "$FILE_ID_FILE"
+do
+    if [ -e "$item" ]; then
+        cp -a "$item" "$BACKUP_DIR/"
+    else
+        echo "[ WARN ] Tidak ditemukan, dilewati: $item"
+    fi
+done
+
+if [ -d "/var/www/html" ]; then
+    cp -a "/var/www/html" "$BACKUP_DIR/"
+else
+    echo "[ WARN ] /var/www/html tidak ditemukan, dilewati."
+fi
+
+# ------------------------------------------------------------
+# Create encrypted ZIP
+# ------------------------------------------------------------
+curdir="/root/${nama}_${waktu}_${tanggal2}.zip"
+
+rm -f "$curdir"
+
+echo "[ INFO ] Membuat arsip backup..."
+
+if ! (
+    cd /root &&
+    zip -r -q -P "$InputPass" "$(basename "$curdir")" "$(basename "$BACKUP_DIR")"
+); then
+    red "Gagal membuat file ZIP backup."
+    exit 1
+fi
+
+if [ ! -s "$curdir" ]; then
+    red "File backup berhasil dibuat tetapi ukurannya 0 byte."
+    exit 1
+fi
+
+echo "[ INFO ] Backup dibuat: $curdir"
+echo "[ INFO ] Mengirim backup ke Telegram..."
+
+# ------------------------------------------------------------
+# Telegram caption
+# ------------------------------------------------------------
+# Nama client/server diambil dari /etc/data/nama.
+# IP publik diambil saat backup dijalankan. Jika gagal, gunakan "Unknown".
+CLIENT_NAME="$nama"
+IP_ADDRESS="$(curl -4 -fsS --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || true)"
+[ -n "$IP_ADDRESS" ] || IP_ADDRESS="Unknown"
+
+# Escape karakter HTML agar caption tidak rusak jika nama server berisi &, <, atau >.
+html_escape() {
+    printf '%s' "$1" | sed \
+        -e 's/&/\&amp;/g' \
+        -e 's/</\&lt;/g' \
+        -e 's/>/\&gt;/g' \
+        -e 's/"/\&quot;/g'
+}
+
+CLIENT_NAME_HTML="$(html_escape "$CLIENT_NAME")"
+IP_ADDRESS_HTML="$(html_escape "$IP_ADDRESS")"
+
+CAPTION=$(cat <<EOF
+=================================
+『 Successfully backup your Database 』
+=================================
+◈ Client  : <code>${CLIENT_NAME_HTML}</code>
+◈ IP VPS  : <code>${IP_ADDRESS_HTML}</code>
+◈ Version  : 3.1 Stable
+◈ Built By  : @SaputraTech
+=================================
+➣ How To Restore ?
+➣ Use SFTP
+➣ Go to /var/lib/marzban
+➣ Replace file db.sqlite3
+=================================
+EOF
+)
+
+# ------------------------------------------------------------
+# Telegram upload
+# ------------------------------------------------------------
+
+# Ambil IP publik VPS. Jika gagal, tetap lanjut dengan nilai Unknown.
+IP_ADDRESS="$(
+    curl -4fsS --connect-timeout 8 --max-time 15 https://api.ipify.org 2>/dev/null \
+    || true
+)"
+IP_ADDRESS="${IP_ADDRESS:-Unknown}"
+
+# Nama client/server yang aman untuk ditampilkan di caption.
+CLIENT_NAME="${nama:-server}"
+
+# Escape karakter HTML Telegram agar caption tidak rusak.
+telegram_html_escape() {
+    local value="$1"
+    value="${value//&/&amp;}"
+    value="${value//</&lt;}"
+    value="${value//>/&gt;}"
+    value="${value//\"/&quot;}"
+    printf '%s' "$value"
+}
+
+CLIENT_NAME_ESCAPED="$(telegram_html_escape "$CLIENT_NAME")"
+IP_ADDRESS_ESCAPED="$(telegram_html_escape "$IP_ADDRESS")"
+
+# Caption dibuat sebagai satu string agar quote/newline aman.
+CAPTION="$(cat <<EOF
+=================================
+『 Successfully backup your Database 』
+=================================
+◈ Client  : <code>${CLIENT_NAME_ESCAPED}</code>
+◈ IP VPS  : <code>${IP_ADDRESS_ESCAPED}</code>
+◈ Version  : 3.1 Stable
+◈ Built By  : @Faiqzuhry
+=================================
+EOF
+)"
+
+echo "[ INFO ] Mengirim backup ke Telegram..."
+
+response="$(
+    curl -fsS --connect-timeout 15 --max-time 600 \
+        -F "chat_id=${chatId}" \
+        -F "document=@${curdir}" \
+        -F "caption=${CAPTION}" \
+        -F "parse_mode=HTML" \
+        "https://api.telegram.org/bot${botToken}/sendDocument" 2>/dev/null
+)"
+curl_status=$?
+
+if [ "$curl_status" -ne 0 ] || [ -z "$response" ]; then
+    red "Gagal mengirim backup ke Telegram."
+    red "File backup tetap disimpan di: $curdir"
+    exit 1
+fi
+
+ok="$(printf '%s' "$response" | jq -r '.ok // false' 2>/dev/null)"
+file_id="$(printf '%s' "$response" | jq -r '.result.document.file_id // empty' 2>/dev/null)"
+
+if [ "$ok" != "true" ] || [ -z "$file_id" ]; then
+    red "Telegram menolak/gagal menerima backup."
+    printf '%s\n' "$response"
+    red "File backup tetap disimpan di: $curdir"
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# Save backup information
+# ------------------------------------------------------------
+{
+    printf '### %s_%s_%s\n' "$nama" "$waktu" "$tanggal"
+    printf 'File ID: %s\n' "$file_id"
+    printf 'Server telah berhasil backup data pada tanggal %s pukul %s.\n' "$tanggal" "$waktu"
+} >> "$FILE_ID_FILE"
+
+printf '%s - Backup berhasil dikirim ke Telegram: %s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$curdir" >> "$LOG_FILE"
+
+green "Backup berhasil dibuat dan dikirim ke Telegram."
+echo "File ID: $file_id"
+
+# Hapus arsip lokal hanya setelah Telegram benar-benar mengonfirmasi sukses.
+rm -f "$curdir"
+
+# Refresh profile jika tersedia, tanpa membuat backup gagal.
+if command -v profile >/dev/null 2>&1; then
+    profile || true
+fi
+
+exit 0

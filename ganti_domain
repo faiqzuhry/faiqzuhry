@@ -1,0 +1,364 @@
+#!/bin/bash
+
+MARZBAN_DIR="/opt/marzban"
+XRAY_CONF="/opt/marzban/xray.conf"
+DEFAULT_CONF="/opt/marzban/default.conf"
+CERT_FILE="/var/lib/marzban/xray.crt"
+KEY_FILE="/var/lib/marzban/xray.key"
+DOMAIN_FILE="/etc/data/domain"
+BACKUP_ROOT="/opt/marzban/domain-backups"
+
+info() {
+    echo -e "\033[1;36m[INFO]\033[0m $1"
+}
+
+ok() {
+    echo -e "\033[1;32m[ OK ]\033[0m $1"
+}
+
+warn() {
+    echo -e "\033[1;33m[WARN]\033[0m $1"
+}
+
+error() {
+    echo -e "\033[1;31m[ERR ]\033[0m $1"
+}
+
+die() {
+    error "$1"
+    exit 1
+}
+
+if [ "$(id -u)" != "0" ]; then
+    die "Jalankan sebagai root."
+fi
+
+[ -d "$MARZBAN_DIR" ] || die "$MARZBAN_DIR tidak ditemukan."
+[ -f "$MARZBAN_DIR/docker-compose.yml" ] || die "docker-compose.yml tidak ditemukan."
+
+command -v docker >/dev/null 2>&1 || die "Docker tidak ditemukan."
+docker compose version >/dev/null 2>&1 || die "Docker Compose tidak tersedia."
+command -v curl >/dev/null 2>&1 || die "curl tidak ditemukan."
+
+mkdir -p /etc/data "$BACKUP_ROOT"
+
+clear 2>/dev/null
+
+echo
+echo "============================================================"
+echo "              MARZBAN DOMAIN CHANGER"
+echo "============================================================"
+echo
+
+# ============================================================
+# DOMAIN LAMA
+# ============================================================
+
+CURRENT_DOMAIN=""
+
+# Prioritas pertama: domain yang sebelumnya disimpan installer.
+if [ -s "$DOMAIN_FILE" ]; then
+    SAVED_DOMAIN=$(tr -d '[:space:]' < "$DOMAIN_FILE")
+
+    if echo "$SAVED_DOMAIN" | grep -Eq \
+        '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'; then
+        CURRENT_DOMAIN="$SAVED_DOMAIN"
+    fi
+fi
+
+# Fallback: cari server_name domain valid dari konfigurasi.
+if [ -z "$CURRENT_DOMAIN" ]; then
+    for CONF in "$DEFAULT_CONF" "$XRAY_CONF" "$MARZBAN_DIR/nginx.conf"; do
+        if [ -f "$CONF" ]; then
+            FOUND=$(grep -Eo \
+                'server_name[[:space:]]+[A-Za-z0-9.-]+\.[A-Za-z]{2,63}' \
+                "$CONF" 2>/dev/null |
+                head -n1 |
+                awk '{print $2}')
+
+            if echo "$FOUND" | grep -Eq \
+                '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'; then
+                CURRENT_DOMAIN="$FOUND"
+                break
+            fi
+        fi
+    done
+fi
+
+echo "Domain saat ini:"
+echo "  ${CURRENT_DOMAIN:-tidak ditemukan}"
+echo
+
+# ============================================================
+# INPUT DOMAIN BARU
+# ============================================================
+
+read -r -p "Masukkan DOMAIN BARU: " NEW_DOMAIN
+
+NEW_DOMAIN=$(printf '%s' "$NEW_DOMAIN" |
+    tr '[:upper:]' '[:lower:]' |
+    sed 's/[[:space:]]//g')
+
+NEW_DOMAIN="${NEW_DOMAIN#http://}"
+NEW_DOMAIN="${NEW_DOMAIN#https://}"
+NEW_DOMAIN="${NEW_DOMAIN%%/*}"
+NEW_DOMAIN="${NEW_DOMAIN%.}"
+
+if ! echo "$NEW_DOMAIN" | grep -Eq \
+    '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'; then
+    die "Format domain tidak valid: $NEW_DOMAIN"
+fi
+
+# ============================================================
+# PUBLIC IP
+# ============================================================
+
+info "Mendeteksi IP publik VPS..."
+
+PUBLIC_IP=$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null)
+
+[ -n "$PUBLIC_IP" ] || die "Gagal mendeteksi IP publik VPS."
+
+echo "IP VPS : $PUBLIC_IP"
+echo
+
+# ============================================================
+# DNS
+# ============================================================
+
+info "Mengecek DNS $NEW_DOMAIN ..."
+
+DNS_IP=""
+
+if command -v dig >/dev/null 2>&1; then
+    DNS_IP=$(dig +short A "$NEW_DOMAIN" 2>/dev/null | head -n1)
+elif command -v getent >/dev/null 2>&1; then
+    DNS_IP=$(getent ahostsv4 "$NEW_DOMAIN" 2>/dev/null |
+        awk 'NR==1 {print $1}')
+else
+    DNS_IP=$(curl -4fsS --max-time 10 \
+        "https://dns.google/resolve?name=$NEW_DOMAIN&type=A" 2>/dev/null |
+        grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' |
+        head -n1)
+fi
+
+if [ -n "$DNS_IP" ]; then
+    echo "DNS : $DNS_IP"
+
+    if [ "$DNS_IP" = "$PUBLIC_IP" ]; then
+        ok "DNS sudah mengarah ke VPS."
+    else
+        warn "DNS berbeda dengan IP VPS."
+        echo "VPS : $PUBLIC_IP"
+        echo "DNS : $DNS_IP"
+        echo
+
+        read -r -p "Tetap lanjut? [y/N]: " ANSWER
+        [[ "$ANSWER" =~ ^[Yy]$ ]] || die "Dibatalkan."
+    fi
+else
+    warn "DNS A record belum ditemukan."
+
+    read -r -p "Tetap lanjut? [y/N]: " ANSWER
+    [[ "$ANSWER" =~ ^[Yy]$ ]] || die "Dibatalkan."
+fi
+
+echo
+echo "============================================================"
+echo "Domain lama : ${CURRENT_DOMAIN:-tidak ditemukan}"
+echo "Domain baru : $NEW_DOMAIN"
+echo "============================================================"
+echo
+
+read -r -p "Lanjut mengganti domain? [y/N]: " CONFIRM
+[[ "$CONFIRM" =~ ^[Yy]$ ]] || die "Dibatalkan."
+
+# ============================================================
+# BACKUP
+# ============================================================
+
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+BACKUP_DIR="$BACKUP_ROOT/$TIMESTAMP"
+
+mkdir -p "$BACKUP_DIR"
+
+cp -a "$XRAY_CONF" "$BACKUP_DIR/xray.conf" 2>/dev/null || true
+cp -a "$DEFAULT_CONF" "$BACKUP_DIR/default.conf" 2>/dev/null || true
+cp -a "$CERT_FILE" "$BACKUP_DIR/xray.crt" 2>/dev/null || true
+cp -a "$KEY_FILE" "$BACKUP_DIR/xray.key" 2>/dev/null || true
+
+ok "Backup dibuat:"
+echo "  $BACKUP_DIR"
+echo
+
+# ============================================================
+# SIMPAN DOMAIN BARU
+# ============================================================
+
+printf '%s\n' "$NEW_DOMAIN" > "$DOMAIN_FILE"
+chmod 600 "$DOMAIN_FILE"
+
+ok "Domain baru disimpan ke $DOMAIN_FILE"
+
+# ============================================================
+# UPDATE SERVER_NAME
+# ============================================================
+
+info "Mengubah konfigurasi server_name..."
+
+update_server_name() {
+    local file="$1"
+
+    [ -f "$file" ] || return 0
+
+    if grep -qE '^[[:space:]]*server_name[[:space:]]+' "$file"; then
+        sed -i -E \
+            "0,/^[[:space:]]*server_name[[:space:]]+[^;]+;/s//server_name $NEW_DOMAIN;/" \
+            "$file"
+    fi
+}
+
+update_server_name "$XRAY_CONF"
+update_server_name "$DEFAULT_CONF"
+
+# ============================================================
+# STOP NGINX
+# ============================================================
+
+cd "$MARZBAN_DIR"
+
+info "Menghentikan Nginx sementara..."
+docker compose stop nginx >/dev/null 2>&1 || true
+sleep 2
+
+# ============================================================
+# AUTO FIX-SSL
+# ============================================================
+
+echo
+info "Menjalankan fix-ssl otomatis..."
+
+if command -v fix-ssl >/dev/null 2>&1; then
+
+    if fix-ssl; then
+        ok "fix-ssl selesai dengan sukses."
+    else
+        warn "fix-ssl gagal."
+
+        # Kembalikan domain file ke domain sebelumnya jika tersedia.
+        if [ -n "$CURRENT_DOMAIN" ]; then
+            printf '%s\n' "$CURRENT_DOMAIN" > "$DOMAIN_FILE"
+        fi
+
+        cp -a "$BACKUP_DIR/xray.conf" "$XRAY_CONF" 2>/dev/null || true
+        cp -a "$BACKUP_DIR/default.conf" "$DEFAULT_CONF" 2>/dev/null || true
+
+        docker compose up -d nginx marzban >/dev/null 2>&1 || true
+
+        die "Domain tidak diterapkan karena SSL gagal."
+    fi
+
+else
+    warn "fix-ssl tidak ditemukan."
+    die "fix-ssl wajib tersedia untuk mengganti domain."
+fi
+
+# ============================================================
+# TUNGGU MARZBAN SIAP
+# ============================================================
+
+info "Menunggu Marzban siap..."
+
+for i in $(seq 1 30); do
+    if ss -lntp 2>/dev/null | grep -q ':12800 '; then
+        break
+    fi
+    sleep 2
+done
+
+# Pastikan container aktif.
+docker compose up -d marzban nginx >/dev/null 2>&1 || true
+
+sleep 5
+
+# ============================================================
+# AUTO BUAT TOKEN
+# ============================================================
+
+echo
+info "Membuat token API otomatis..."
+
+if command -v buat_token >/dev/null 2>&1; then
+
+    TOKEN_OK=0
+
+    for i in 1 2 3 4 5; do
+        if buat_token >/dev/null 2>&1; then
+            if [ -s /etc/data/token.json ] &&
+               ! grep -q '<html\|404 Not Found' /etc/data/token.json 2>/dev/null; then
+                TOKEN_OK=1
+                break
+            fi
+        fi
+
+        sleep 3
+    done
+
+    if [ "$TOKEN_OK" = "1" ]; then
+        ok "Token API berhasil dibuat."
+    else
+        warn "Token API belum berhasil dibuat."
+        warn "Jalankan 'buat_token' secara manual jika diperlukan."
+    fi
+
+else
+    warn "buat_token tidak ditemukan."
+fi
+
+# ============================================================
+# FINAL RESTART
+# ============================================================
+
+info "Menjalankan ulang Marzban dan Nginx..."
+
+docker compose up -d marzban nginx >/dev/null 2>&1 || {
+    warn "Gagal menjalankan ulang Marzban/Nginx."
+}
+
+sleep 3
+
+# ============================================================
+# VERIFY DOMAIN
+# ============================================================
+
+echo
+echo "============================================================"
+echo "                 VERIFIKASI DOMAIN"
+echo "============================================================"
+
+STORED_DOMAIN=$(cat "$DOMAIN_FILE" 2>/dev/null)
+
+echo "Domain tersimpan : $STORED_DOMAIN"
+
+if [ "$STORED_DOMAIN" = "$NEW_DOMAIN" ]; then
+    ok "Domain berhasil disimpan."
+else
+    warn "Domain file tidak sesuai."
+fi
+
+if [ -f "$DEFAULT_CONF" ]; then
+    if grep -q "server_name $NEW_DOMAIN;" "$DEFAULT_CONF"; then
+        ok "Nginx server_name sudah menggunakan domain baru."
+    fi
+fi
+
+echo
+echo "============================================================"
+echo "             GANTI DOMAIN SELESAI"
+echo "============================================================"
+echo
+echo "Domain baru : $NEW_DOMAIN"
+echo "SSL         : $CERT_FILE"
+echo "Backup      : $BACKUP_DIR"
+echo
+echo "============================================================"

@@ -1,0 +1,399 @@
+#!/bin/bash
+# ============================================================
+# FaiqVPN × MARZBAN — SIMPLE COLOR V1 (2-COLUMN GRID BOX)
+# Pure Bash / no whiptail / no dialog
+# Pilihan: ketik nomor menu lalu ENTER | 0 = kembali
+# ============================================================
+
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+
+domain=$(cat /etc/data/domain 2>/dev/null)
+port=$(ss -tunlp 2>/dev/null | grep 'python' | awk '{print $5}' | awk -F':' '{print $NF}' | head -n1)
+
+# ANSI Color Codes
+RESET=$'\033[0m'
+BOLD=$'\033[1m'
+CYAN=$'\033[1;36m'
+BLUE=$'\033[1;34m'
+GREEN=$'\033[1;32m'
+YELLOW=$'\033[1;33m'
+MAGENTA=$'\033[1;35m'
+RED=$'\033[1;31m'
+WHITE=$'\033[1;37m'
+DIM=$'\033[2m'
+
+cleanup() {
+    printf '%b' "$RESET"
+    stty echo icanon 2>/dev/null
+}
+
+trap cleanup EXIT INT TERM
+
+status() {
+    if ss -lnt 2>/dev/null | grep -q ':40000 '; then
+        WARP="${GREEN}ON${RESET}"
+    else
+        WARP="${RED}OFF${RESET}"
+    fi
+
+    if systemctl is-active --quiet ufw 2>/dev/null; then
+        UFW="${GREEN}ON${RESET}"
+    else
+        UFW="${RED}OFF${RESET}"
+    fi
+
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        F2B="${GREEN}ON${RESET}"
+    else
+        F2B="${RED}OFF${RESET}"
+    fi
+
+    if [[ -e /proc/net/if_inet6 ]]; then
+        IPV6="${GREEN}ON${RESET}"
+    else
+        IPV6="${RED}OFF${RESET}"
+    fi
+
+    RAM=$(free -h 2>/dev/null | awk '/^Mem:/ {print $3 "/" $2}')
+    DISK=$(df -h / 2>/dev/null | awk 'NR==2 {print $5}')
+    UPTIME=$(uptime -p 2>/dev/null | sed 's/^up //' | cut -c1-22)
+    IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+}
+
+header() {
+    status
+    clear
+    local host cpu_pct ram_pct disk_pct
+    host=$(hostname 2>/dev/null | cut -c1-14)
+    cpu_pct=$(LC_ALL=C top -bn1 2>/dev/null | awk '/Cpu\(s\)/ {printf "%d", 100-$8; exit}')
+    [[ "$cpu_pct" =~ ^[0-9]+$ ]] || cpu_pct=0
+    ram_pct=$(free 2>/dev/null | awk '/^Mem:/ {if($2>0) printf "%d", ($3/$2)*100}')
+    [[ "$ram_pct" =~ ^[0-9]+$ ]] || ram_pct=0
+    disk_pct=$(df / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+    [[ "$disk_pct" =~ ^[0-9]+$ ]] || disk_pct=0
+
+    # Dashboard Header & Info Simetris (Lebar 42 Karakter)
+    printf '\n%b┌────────────────────────────────────────┐%b\n' "$CYAN" "$RESET"
+printf '%b│%b          %bFaiqVPN%b × %bMARZBAN%b             %b│%b\n' \
+    "$CYAN" "$RESET" "$BLUE" "$RESET" "$MAGENTA" "$RESET" "$CYAN" "$RESET"
+printf '%b│%b             Control Panel              %b│%b\n' \
+    "$CYAN" "$DIM" "$CYAN" "$RESET"
+printf '%b├────────────────────────────────────────┤%b\n' \
+    "$CYAN" "$RESET"
+printf '%b│%b ● SERVER  : %b%-26.26s %b│%b\n' \
+    "$CYAN" "$GREEN" "$WHITE" "$host" "$CYAN" "$RESET"
+printf '%b│%b ● CPU %-5s   RAM %-5s    DISK %-6s %b│%b\n' \
+    "$CYAN" "$WHITE" "${cpu_pct}%" "${ram_pct}%" "${disk_pct}%" "$CYAN" "$RESET"
+printf '%b│%b ● WARP:%b  UFW:%b  F2B:%b  IPv6:%b     %b│%b\n' \
+    "$CYAN" "$RESET" "$WARP" "$UFW" "$F2B" "$IPV6" "$CYAN" "$RESET"
+printf '%b│%b ● UP: %-32.32s %b│%b\n' \
+    "$CYAN" "$WHITE" "${UPTIME:--}" "$CYAN" "$RESET"
+printf '%b└────────────────────────────────────────┘%b\n' \
+    "$CYAN" "$RESET"
+}
+
+# -------------------- SELECTOR (2 KOLOM GRID) --------------------
+select_menu() {
+    local title="$1"
+    shift
+    local items=("$@")
+    local total=${#items[@]}
+    local choice
+    MENU_CHOICE=0
+
+    while :; do
+        clear
+        if [[ "$title" == "MAIN MENU" ]]; then
+            header
+            # Kotak Menu Utama Rapi (42 Karakter)
+            printf '%b┌────────────────────────────────────────┐%b\n' "$CYAN" "$RESET"
+            printf '%b│%b              PILIH MENU                %b│%b\n' "$CYAN" "$WHITE" "$CYAN" "$RESET"
+            printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
+            printf '%b│%b  %b[01]%b ◉  TAMBAH USER                   %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$CYAN" "$CYAN" "$RESET"
+            printf '%b│%b       %bVMess /VLess /Trojan /Shadowsocks%b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
+            printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
+            printf '%b│%b  %b[02]%b ⚙  KONFIGURASI                   %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$GREEN" "$CYAN" "$RESET"
+            printf '%b│%b       %bManajemen akun, tools, limit     %b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
+            printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
+            printf '%b│%b  %b[03]%b ◆  MARZBAN                       %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$MAGENTA" "$CYAN" "$RESET"
+            printf '%b│%b       %bService & CLI Marzban            %b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
+            printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
+            printf '%b│%b  %b[04]%b ▣  INFORMASI SERVER              %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$YELLOW" "$CYAN" "$RESET"
+            printf '%b│%b       %bDetail server, status, dashboard %b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
+            printf '%b├────────────────────────────────────────┤%b\n' "$CYAN" "$RESET"
+            printf '%b│%b  %b[05]%b ↪  KELUAR                        %b│%b\n' "$CYAN" "$RESET" "$YELLOW" "$RED" "$CYAN" "$RESET"
+            printf '%b│%b       %bKeluar dari panel                %b│%b\n' "$CYAN" "$RESET" "$DIM" "$CYAN" "$RESET"
+            printf '%b└────────────────────────────────────────┘%b\n' "$CYAN" "$RESET"
+            printf '\n%bKetik nomor menu lalu ENTER%b\n' "$CYAN" "$RESET"
+            printf '%bPilih [1-5]: %b' "$WHITE" "$RESET"
+        else
+            printf '\n%b── %b%s%b ──%b\n\n' "$CYAN" "$WHITE" "$title" "$RESET" "$CYAN"
+            
+            # Header Grid Kotak
+            printf "%b┌───────────────────────────┬───────────────────────────┐%b\n" "$CYAN" "$RESET"
+
+            local half=$(( (total + 1) / 2 ))
+            local row
+            for ((row=0; row<half; row++)); do
+                local i1=$row
+                local i2=$((row + half))
+
+                # Kolom Kiri (1)
+                local col1="$BLUE"
+                (( i1 % 4 == 1 )) && col1="$GREEN"
+                (( i1 % 4 == 2 )) && col1="$MAGENTA"
+                (( i1 % 4 == 3 )) && col1="$YELLOW"
+                local num1=$(printf "%02d" "$((i1+1))")
+                local item1="${items[$i1]}"
+                local c1_display=$(printf "%b%s%b %b%-21.21s%b" "$YELLOW" "$num1" "$RESET" "$col1" "$item1" "$RESET")
+
+                # Kolom Kanan (2)
+                if (( i2 < total )); then
+                    local col2="$BLUE"
+                    (( i2 % 4 == 1 )) && col2="$GREEN"
+                    (( i2 % 4 == 2 )) && col2="$MAGENTA"
+                    (( i2 % 4 == 3 )) && col2="$YELLOW"
+                    local num2=$(printf "%02d" "$((i2+1))")
+                    local item2="${items[$i2]}"
+                    local c2_display=$(printf "%b%s%b %b%-21.21s%b" "$YELLOW" "$num2" "$RESET" "$col2" "$item2" "$RESET")
+                    
+                    printf "%b│%b  %s %b│%b  %s %b│%b\n" "$CYAN" "$RESET" "$c1_display" "$CYAN" "$RESET" "$c2_display" "$CYAN" "$RESET"
+                else
+                    # Jika kolom kanan kosong (ganjil di baris terakhir)
+                    printf "%b│%b  %s %b│%b\n" "$CYAN" "$RESET" "$c1_display" "$CYAN" "$RESET"
+                fi
+
+                # Pemisah Baris Horizontal / Penutup
+                if (( row < half - 1 )); then
+                    if (( row == half - 2 && total % 2 != 0 )); then
+                        printf "%b├───────────────────────────┴───────────────────────────┘%b\n" "$CYAN" "$RESET"
+                    else
+                        printf "%b├───────────────────────────┼───────────────────────────┤%b\n" "$CYAN" "$RESET"
+                    fi
+                fi
+            done
+
+            # Footer Grid Kotak
+            if (( total % 2 != 0 )); then
+                printf "%b└───────────────────────────┘%b\n" "$CYAN" "$RESET"
+            else
+                printf "%b└───────────────────────────┴───────────────────────────┘%b\n" "$CYAN" "$RESET"
+            fi
+
+            printf '\n%bKetik nomor menu lalu ENTER%b\n' "$CYAN" "$RESET"
+            printf '%bPilih [1-%d] / 0 kembali: %b' "$WHITE" "$total" "$RESET"
+        fi
+
+        IFS= read -r choice
+        choice="${choice//[[:space:]]/}"
+
+        if [[ "$choice" == "0" || "$choice" == "q" || "$choice" == "Q" ]]; then
+            MENU_CHOICE=0
+            return
+        fi
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= total )); then
+            MENU_CHOICE=$choice
+            return
+        fi
+
+        printf '\n%bPilihan tidak valid. Masukkan nomor menu.%b\n' "$RED" "$RESET"
+        sleep 1
+    done
+}
+
+pause_menu() {
+    printf '\n  %bTekan ENTER untuk kembali...%b' "$DIM" "$RESET"
+    IFS= read -r
+}
+
+run_cmd() {
+    local cmd="$1"
+    cleanup
+    clear
+    printf '\n%b  FaiqVPN › %s%b\n\n' "$CYAN" "$cmd" "$RESET"
+    bash -c "$cmd"
+    printf '\n'
+    pause_menu
+}
+
+# -------------------- USER --------------------
+user_menu() {
+    while :; do
+        select_menu "USER MANAGEMENT" \
+            "VMess" "VMess WS" "VMess gRPC" "VMess HTTP Upgrade" \
+            "VLess" "VLess WS" "VLess gRPC" "VLess HTTP Upgrade" \
+            "Trojan" "Trojan WS" "Trojan gRPC" "Trojan HTTP Upgrade" \
+            "Shadowsocks" "Shadowsocks WS" "Shadowsocks gRPC" "Shadowsocks Upgrade" \
+            "Shadowsocks Outline" "Trial User"
+
+        case "$MENU_CHOICE" in
+            1) run_cmd "addvmess" ;;
+            2) run_cmd "addvmws" ;;
+            3) run_cmd "addvmgrpc" ;;
+            4) run_cmd "addvmhu" ;;
+            5) run_cmd "addvless" ;;
+            6) run_cmd "addvlws" ;;
+            7) run_cmd "addvlgrpc" ;;
+            8) run_cmd "addvlhu" ;;
+            9) run_cmd "addtrojan" ;;
+            10) run_cmd "addtrws" ;;
+            11) run_cmd "addtrgrpc" ;;
+            12) run_cmd "addtrhu" ;;
+            13) run_cmd "addshadow" ;;
+            14) run_cmd "addssws" ;;
+            15) run_cmd "addssgrpc" ;;
+            16) run_cmd "addsshu" ;;
+            17) run_cmd "addsso" ;;
+            18) run_cmd "addtrial" ;;
+            *) return ;;
+        esac
+    done
+}
+
+# -------------------- CONFIG --------------------
+config_menu() {
+    while :; do
+        select_menu "SERVER CONFIGURATION" \
+            "Backup / Restore" "Auto Reboot" "Manajemen Akun" "Hapus User" \
+            "Renew User" "Reset Usage" "Cek Status User" "Cek Login Xray" \
+            "Buat Token API" "Cek Log Xray" "Cek Error Xray" "Cek Log Nginx" \
+            "Cek RAM" "Set Limit Xray" "Benchmark VPS" "Ganti Xray Core" \
+            "WARP" "Routing" "Lihat Routing" "Ganti Domain"
+
+        case "$MENU_CHOICE" in
+            1) run_cmd "menu-backup" ;;
+            2) run_cmd "menu-reboot" ;;
+            3) run_cmd "menu-akun" ;;
+            4) 
+                cleanup; clear
+                read -rp "Masukkan Username yang akan dihapus: " u
+                [ -n "$u" ] && run_cmd "hapus '$u'"
+                ;;
+            5) 
+                cleanup; clear
+                read -rp "Masukkan Username: " u
+                read -rp "Expired baru (hari): " d
+                [ -n "$u" ] && [ -n "$d" ] && run_cmd "renew '$u' '$d'"
+                ;;
+            6) 
+                cleanup; clear
+                read -rp "Masukkan Username: " u
+                [ -n "$u" ] && run_cmd "resetusage '$u'"
+                ;;
+            7) 
+                cleanup; clear
+                read -rp "Masukkan Username: " u
+                [ -n "$u" ] && run_cmd "status '$u'"
+                ;;
+            8) run_cmd "ceklogin" ;;
+            9) run_cmd "buat_token" ;;
+            10) run_cmd "ceklog" ;;
+            11) run_cmd "cekerror" ;;
+            12) run_cmd "ceknginx" ;;
+            13) run_cmd "ram" ;;
+            14) run_cmd "setlimit" ;;
+            15) run_cmd "bench" ;;
+            16) run_cmd "ganticore" ;;
+            17) run_cmd "warp" ;;
+            18) run_cmd "routing" ;;
+            19) run_cmd "seeroute" ;;
+
+            20)
+                cleanup
+                clear
+                if command -v ganti_domain >/dev/null 2>&1; then
+                    ganti_domain
+                elif [ -x /root/ganti_domain ]; then
+                    /root/ganti_domain
+                else
+                    echo
+                    echo "Error: ganti_domain tidak ditemukan."
+                    echo
+                    echo "Pastikan file tersedia di:"
+                    echo "  /root/ganti_domain"
+                    echo
+                fi
+                read -rp "Tekan ENTER untuk kembali..."
+                ;;
+
+            *) return ;;
+        esac
+    done
+}
+
+# -------------------- MARZBAN --------------------
+marzban_menu() {
+    while :; do
+        select_menu "MARZBAN CONTROL" \
+            "Start Marzban" "Stop Marzban" "Restart Marzban" \
+            "Status Marzban" "Logs Marzban" "Update Marzban" \
+            "Buat Admin Sudo" "List Admin" "List User" "Rebuild"
+
+        case "$MENU_CHOICE" in
+            1) run_cmd "marzban up" ;;
+            2) run_cmd "marzban down" ;;
+            3) run_cmd "marzban restart" ;;
+            4) run_cmd "marzban status" ;;
+            5) run_cmd "marzban logs" ;;
+            6) run_cmd "marzban update" ;;
+            7) run_cmd "marzban cli admin create --sudo" ;;
+            8) run_cmd "marzban cli admin list" ;;
+            9) run_cmd "marzban cli user list" ;;
+            10)
+                cleanup
+                clear
+                if [ -x /usr/local/bin/rebuild ]; then
+                    /usr/local/bin/rebuild
+                else
+                    echo
+                    echo "Error: /usr/local/bin/rebuild tidak ditemukan."
+                    echo "Silakan install file rebuild terlebih dahulu."
+                    echo
+                fi
+                pause_menu
+                ;;
+            *) return ;;
+        esac
+    done
+}
+
+# -------------------- INFO --------------------
+info_menu() {
+    cleanup
+    status
+    clear
+    printf '\n%b── %bSERVER INFORMATION%b ──%b\n\n' "$CYAN" "$WHITE" "$RESET" "$CYAN"
+    printf '%bIP       : %b%s%b\n' "$CYAN" "$WHITE" "${IP:--}" "$RESET"
+    printf '%bDomain   : %b%s%b\n' "$CYAN" "$WHITE" "${domain:--}" "$RESET"
+    printf '%bWARP     : %b%s%b\n' "$CYAN" "$RESET" "$WARP" "$RESET"
+    printf '%bUFW      : %b%s%b\n' "$CYAN" "$RESET" "$UFW" "$RESET"
+    printf '%bFail2Ban : %b%s%b\n' "$CYAN" "$RESET" "$F2B" "$RESET"
+    printf '%bRAM      : %b%s%b\n' "$CYAN" "$WHITE" "${RAM:--}" "$RESET"
+    printf '%bDisk     : %b%s%b\n' "$CYAN" "$WHITE" "${DISK:--}" "$RESET"
+    printf '%bUptime   : %b%s%b\n' "$CYAN" "$WHITE" "${UPTIME:--}" "$RESET"
+    printf '%bTimezone : %b%s%b\n' "$CYAN" "$WHITE" "$(timedatectl show -p Timezone --value 2>/dev/null || echo Asia/Jakarta)" "$RESET"
+    pause_menu
+}
+
+# -------------------- MAIN LOOP --------------------
+while :; do
+    select_menu "MAIN MENU" \
+        "Tambah User" \
+        "Konfigurasi Server" \
+        "Marzban Control" \
+        "Informasi Server" \
+        "Keluar"
+
+    case "$MENU_CHOICE" in
+        1) user_menu ;;
+        2) config_menu ;;
+        3) marzban_menu ;;
+        4) info_menu ;;
+        5|0) cleanup; clear; exit 0 ;;
+    esac
+done
+

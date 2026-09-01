@@ -1,0 +1,141 @@
+#!/bin/bash
+
+# Check if the script is run as root
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+clear
+
+# Check if bot token and user ID are already set for autokill
+if [[ ! -f "/etc/autokill/telegram_config.conf" ]]; then
+    # Bot token and user ID not set, prompt user to enter them
+    echo "Bot token and user ID are not set. Please enter your bot token and user ID."
+
+    read -rp "Enter your Telegram bot token: " botToken
+    read -rp "Enter your Telegram user ID: " chatId
+
+    # Save the configuration
+    echo "botToken=$botToken" > "/etc/autokill/telegram_config.conf"
+    echo "chatId=$chatId" >> "/etc/autokill/telegram_config.conf"
+
+    echo "Configuration saved successfully. You can now run the IP limiter script."
+    exit 0
+fi
+
+# Function to print a stylish header
+print_header() {
+    echo "**************************************************"
+    echo "*                                                *"
+    echo "*    User IP Limiter Configuration and Control   *"
+    echo "*                                                *"
+    echo "**************************************************"
+    echo ""
+}
+
+# Function to set the limit IP configuration
+set_limit_ip() {
+    # Set maximum allowed IPs
+    set_max_allowed_ips
+	echo "Ingat, set cron interval sama dengan set penalty time nya, contoh jika anda set cron nya setiap 30 menit, berarti penalty nya juga 30 menit, begitu juga dengan value lain yang anda inginkan"
+    # Set cron interval
+    set_cron_interval
+
+    # Set penalty time
+    set_penalty_time
+}
+
+# Function to set the maximum allowed IPs
+set_max_allowed_ips() {
+    echo -n "Enter the maximum allowed number of IPs for each user (enter 0 to disable): "
+    read -r max_ips
+
+    # Validate input
+    if [[ ! "$max_ips" =~ ^[0-9]+$ ]]; then
+        echo "Invalid input. Please enter a valid number."
+        exit 1
+    fi
+
+    # Save the configuration
+    echo "max_allowed_ips=$max_ips" > "/var/lib/marzban/max_ips.conf"
+    echo "Configuration saved successfully."
+}
+
+# Function to set the cron interval
+set_cron_interval() {
+    echo -n "Enter the cron interval in minutes (enter 0 to disable): "
+    read -r cron_interval
+
+    # Validate input
+    if [[ ! "$cron_interval" =~ ^[0-9]+$ ]]; then
+        echo "Invalid input. Please enter a valid number."
+        exit 1
+    fi
+
+    if [ "$cron_interval" -gt 0 ]; then
+        # Add the cron entry to crontab
+        cron_entry="*/$cron_interval * * * * /usr/bin/autokill"
+        (crontab -l 2>/dev/null; echo "$cron_entry") | crontab -
+        echo "Cron interval set successfully."
+    else
+        # Disable cron by removing the entry from crontab
+        crontab -l | grep -v "/usr/bin/autokill" | crontab -
+        echo "Cron interval disabled successfully."
+    fi
+}
+# Function to set penalty time
+set_penalty_time() {
+    # Penalty time configuration file path
+    penalty_time_file="/var/lib/marzban/penalty_time.conf"
+
+    echo -n "Enter the penalty time in minutes (enter 0 to disable penalty): "
+    read -r penalty_time_minutes
+
+    # Validate input
+    if [[ ! "$penalty_time_minutes" =~ ^[0-9]+$ ]]; then
+        echo "Invalid input. Please enter a valid number."
+        exit 1
+    fi
+
+    # Save the penalty time configuration
+    echo "$penalty_time_minutes" > "$penalty_time_file"
+    echo "Penalty time set successfully."
+}
+
+# Function to disable limit IP
+disable_limit_ip() {
+    # Remove configuration files
+    rm -f "/var/lib/marzban/max_ips.conf"
+    rm -f "/var/lib/marzban/penalty_time.conf"
+
+    # Remove cron entry
+    crontab -l | grep -v "/usr/bin/autokill" | crontab -
+
+    echo "Limit IP disabled successfully."
+}
+
+# Main menu
+print_header
+echo "Select an option:"
+echo "1. Set Limit IP"
+echo "2. Disable Limit IP"
+echo "3. Exit"
+
+read -rp "Enter your choice (1-3): " choice
+
+case $choice in
+    1)
+        set_limit_ip
+        ;;
+    2)
+        disable_limit_ip
+        ;;
+    3)
+        echo "Exiting..."
+        exit 0
+        ;;
+    *)
+        echo "Invalid choice. Exiting..."
+        exit 1
+        ;;
+esac

@@ -1,0 +1,89 @@
+#!/bin/bash
+
+# Check if the script is run as root
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+clear
+
+# Function to print a stylish header
+print_header() {
+    echo "**************************************************"
+    echo "*                                                *"
+    echo "*          AutoReboot Options Menu               *"
+    echo "*                                                *"
+    echo "**************************************************"
+    echo ""
+}
+
+# Function to schedule daily reboot
+scheduleDailyReboot() {
+    echo "Masukkan waktu reboot harian dalam format 24 jam (HH:MM):"
+    read -rp "Contoh: 02:00 untuk 2 Pagi -: " dailyTime
+    # Parse the input time
+    hour=$(echo "$dailyTime" | cut -d: -f1)
+    minute=$(echo "$dailyTime" | cut -d: -f2)
+    (crontab -l 2>/dev/null | grep -v "/usr/bin/reboot_otomatis"; echo "$minute $hour * * * /usr/bin/reboot_otomatis") | crontab -
+    echo "Jadwal reboot server harian diatur pada $dailyTime."
+}
+
+# Function to schedule weekly reboot
+scheduleWeeklyReboot() {
+    echo "Masukkan waktu reboot mingguan dalam format 24 jam (HH:MM):"
+    read -rp "Contoh: 02:00 untuk 2 Pagi -: " weeklyTime
+    # Parse the input time
+    hour=$(echo "$weeklyTime" | cut -d: -f1)
+    minute=$(echo "$weeklyTime" | cut -d: -f2)
+    (crontab -l 2>/dev/null | grep -v "/usr/bin/reboot_otomatis"; echo "$minute $hour * * 0 /usr/bin/reboot_otomatis") | crontab -
+    echo "Jadwal reboot server mingguan diatur pada $weeklyTime."
+}
+
+# Function to schedule monthly reboot
+scheduleMonthlyReboot() {
+    echo "Masukkan waktu reboot bulanan dalam format 24 jam (HH:MM):"
+    read -rp "Contoh: 02:00 untuk 2 Pagi -: " monthlyTime
+    # Parse the input time
+    hour=$(echo "$monthlyTime" | cut -d: -f1)
+    minute=$(echo "$monthlyTime" | cut -d: -f2)
+    (crontab -l 2>/dev/null | grep -v "/usr/bin/reboot_otomatis"; echo "$minute $hour 1 * * /usr/bin/reboot_otomatis") | crontab -
+    echo "Jadwal reboot server bulanan diatur pada $monthlyTime."
+}
+
+# Function to disable automatic reboot
+disableAutoReboot() {
+    (crontab -l 2>/dev/null | grep -v "/usr/bin/reboot_otomatis") | crontab -
+    echo "Reboot otomatis dinonaktifkan."
+}
+
+# Menu options
+print_header
+echo "Pilih opsi reboot otomatis:"
+echo "1. Reboot Harian"
+echo "2. Reboot Mingguan"
+echo "3. Reboot Bulanan"
+echo "4. Nonaktifkan Reboot Otomatis"
+echo "5. Batal"
+
+read -p "Masukkan nomor pilihan (1-5): " choice
+
+case $choice in
+    1)
+        scheduleDailyReboot
+        ;;
+    2)
+        scheduleWeeklyReboot
+        ;;
+    3)
+        scheduleMonthlyReboot
+        ;;
+    4)
+        disableAutoReboot
+        ;;
+    5)
+        echo "Operasi dibatalkan."
+        ;;
+    *)
+        echo "Pilihan tidak valid. Operasi dibatalkan."
+        ;;
+esac

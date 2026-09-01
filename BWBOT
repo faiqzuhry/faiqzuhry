@@ -1,0 +1,222 @@
+
+#!/bin/bash
+
+# BWBOT 02AM - CLEAN / SYNC
+# - Public IP otomatis
+# - Telegram config bersama dengan menu-backup
+# - SINGLE TELEGRAM CREDENTIAL SOURCE: /etc/data/telegram_config.conf
+# - Client/expiry dari permission database
+# - Tidak bergantung pada CRONTAB_ENABLED_FILE
+# - Cron dijadwalkan di /etc/cron.d/bwbot (02:00)
+
+set -u
+
+export RED='\033[0;31m'
+export GREEN='\033[0;32m'
+export YELLOW='\033[0;33m'
+export CYAN='\033[0;36m'
+export PINK='\033[0;35m'
+export ORANGE='\033[38;5;208m'
+export TEAL='\033[38;5;30m'
+export WHITE='\033[1;37m'
+export NC='\033[0m'
+
+if [ "$(id -u)" != "0" ]; then
+    colorized_echo red "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+
+CONFIG_FILE="/etc/data/telegram_config.conf"
+PERMISSION_URL="https://raw.githubusercontent.com/faiqzuhry/akses-faiq/main/iphost.txt"
+IPIFY_URL="https://api.ipify.org"
+IPINFO_IP_URL="https://ipinfo.io/ip"
+IPINFO_JSON_BASE="https://ipinfo.io"
+TELEGRAM_API="https://api.telegram.org"
+
+# ---------- Helpers ----------
+die() {
+    echo -e "${RED}[ERROR]${NC} $*" >&2
+    exit 1
+}
+
+command -v curl >/dev/null 2>&1 || die "curl tidak tersedia."
+command -v jq >/dev/null 2>&1 || die "jq tidak tersedia."
+command -v vnstat >/dev/null 2>&1 || die "vnstat tidak tersedia."
+
+# ---------- Shared Telegram config ----------
+# IMPORTANT:
+# /etc/data/telegram_config.conf is created/managed by menu-backup.
+# BWBOT does NOT have its own bot token. It only reads botToken/chatId
+# from the same configuration used by menu-backup.
+if [[ ! -s "$CONFIG_FILE" ]]; then
+    die "Konfigurasi Telegram belum tersedia. Buka menu-backup dan simpan konfigurasi Telegram."
+fi
+
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+
+# Deliberately use ONLY the canonical lowercase variables written by menu-backup.
+# Do not add BOT_TOKEN/CHAT_ID fallbacks here: this prevents a second Telegram
+# credential from silently being used by BWBOT.
+BOT_TOKEN="${botToken:-}"
+CHAT_ID="${chatId:-}"
+button_text="${button_text:-Cek Server}"
+button_url="${button_url:-https://google.com}"
+
+[[ -n "$BOT_TOKEN" ]] || die "botToken dari menu-backup kosong."
+[[ -n "$CHAT_ID" ]] || die "chatId dari menu-backup kosong."
+[[ -n "$button_text" ]] || button_text="Cek Server"
+[[ -n "$button_url" ]] || button_url="https://google.com"
+
+# Refuse an insecure shared config rather than creating a second credential store.
+if [[ "$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)" != "600" ]]; then
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+fi
+
+# ---------- System ----------
+OS=$(lsb_release -ds 2>/dev/null || grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"')
+RAM=$(free -m | awk '/Mem:/ {print $2}')
+UPTIME=$(uptime -p 2>/dev/null || echo "-")
+DOMAIN=$(cat /etc/data/domain 2>/dev/null || echo "-")
+
+# ---------- Public IP ----------
+IP_VPS=$(curl -4fsS --max-time 10 "$IPIFY_URL" 2>/dev/null || true)
+
+if [[ -z "$IP_VPS" ]]; then
+    IP_VPS=$(curl -4fsS --max-time 10 "$IPINFO_IP_URL" 2>/dev/null || true)
+fi
+
+if [[ -z "$IP_VPS" ]]; then
+    IP_VPS=$(hostname -I 2>/dev/null | awk '{print $1}')
+fi
+
+[[ -n "$IP_VPS" ]] || die "Tidak dapat mendeteksi IP VPS."
+
+echo -e "${TEAL}♻️ Detected public IP VPS: ${CYAN}${IP_VPS}${NC}"
+
+# ---------- IP / ISP information ----------
+IP_INFO=$(curl -4fsS --max-time 10 "${IPINFO_JSON_BASE}/${IP_VPS}/json" 2>/dev/null || true)
+
+ISP=$(printf '%s' "$IP_INFO" | jq -r '.org // empty' 2>/dev/null || true)
+REGION=$(printf '%s' "$IP_INFO" | jq -r '.timezone // .region // empty' 2>/dev/null || true)
+IP_COUNTRY=$(printf '%s' "$IP_INFO" | jq -r '.country // empty' 2>/dev/null || true)
+IP_LOC=$(printf '%s' "$IP_INFO" | jq -r '.loc // empty' 2>/dev/null || true)
+
+[[ -n "$ISP" ]] || ISP="Unknown ISP"
+[[ -n "$REGION" ]] || REGION="-"
+
+# ---------- Permission database ----------
+# Hanya satu request. Tidak ada curl dengan URL kosong.
+PERMISSION_FILE=$(curl -4fsS --max-time 10 "$PERMISSION_URL" 2>/dev/null || true)
+
+clientname="Auto IP"
+exp_date="-"
+CLIENT_REGISTERED="no"
+
+if [[ -n "$PERMISSION_FILE" ]]; then
+    CLIENT_INFO=$(printf '%s\n' "$PERMISSION_FILE" |
+        awk -v ip="$IP_VPS" '$1 == ip {print $2 "|" $4; exit}')
+
+    if [[ -n "$CLIENT_INFO" ]]; then
+        IFS='|' read -r clientname exp_date <<< "$CLIENT_INFO"
+        CLIENT_REGISTERED="yes"
+    fi
+fi
+
+# ---------- Expiry ----------
+current_date=$(date +%Y-%m-%d)
+
+if [[ "$exp_date" != "-" && "$exp_date" != "Not Found" && -n "$exp_date" ]]; then
+    if expiry_epoch=$(date -d "$exp_date" +%s 2>/dev/null); then
+        current_epoch=$(date -d "$current_date" +%s)
+
+        if (( expiry_epoch < current_epoch )); then
+            echo -e "${RED}[ INFO ] Script Expired ⛔${NC}"
+            echo -e "${CYAN}Contact admin : ✦ @Faiqzuhry ✦${NC}"
+            exit 1
+        fi
+
+        days_remaining=$(( (expiry_epoch - current_epoch) / 86400 ))
+    else
+        days_remaining="-"
+    fi
+else
+    days_remaining="-"
+fi
+
+# ---------- Bandwidth ----------
+vnstat_output=$(
+    vnstat -y 1 --style 0 2>/dev/null |
+    sed -n 6p |
+    awk '{print "Download :", $2, $3 "\nUpload :", $5, $6 "\nTotal Usage :", $8, $9}'
+)
+
+if [[ -z "$vnstat_output" ]]; then
+    vnstat_output=$'Download : -\nUpload : -\nTotal Usage : -'
+fi
+
+# ---------- Uptime ----------
+uptime_raw="$UPTIME"
+uptime_filtered=$(printf '%s\n' "$uptime_raw" |
+    sed -e 's/.*up *//' \
+        -e 's/minutes/min/g' \
+        -e 's/minute/min/g' \
+        -e 's/hours/hrs/g' \
+        -e 's/hour/hr/g' \
+        -e 's/weeks/week/g' \
+        -e 's/days/day/g' |
+    awk -F, '{print $1 "," $2}')
+
+uptime_final=$(printf '%s' "$uptime_filtered" | sed 's/,$//' | sed 's/^,//')
+[[ -n "$uptime_final" ]] || uptime_final="-"
+
+# ---------- Telegram message ----------
+current_time=$(date +"%d-%m-%Y %I:%M %p")
+button_text_with_emoji="🐳 ${button_text} 🐳"
+
+monospace_message=$(cat <<EOF
+━━━━━━━━━━━━━━━━━━━━━━━
+     🌙 DATA TRAFFIC SERVER 🌙
+━━━━━━━━━━━━━━━━━━━━━━━
+🌐 ISP : <code>${ISP}</code>
+🚀 Status : <code>Active</code>
+⏱ Uptime : <code>${uptime_final}</code>
+🌍 Reg : <code>${REGION}</code>
+➖➖➖➖➖➖➖➖➖➖➖➖
+📥 <code>$(printf '%s\n' "$vnstat_output" | sed -n '1p')</code>
+📤 <code>$(printf '%s\n' "$vnstat_output" | sed -n '2p')</code>
+💼 <code>$(printf '%s\n' "$vnstat_output" | sed -n '3p')</code>
+━━━━━━━━━━━━━━━━━━━━━━━
+  ⚠️ Automatic 02:00 Update ⚠️
+━━━━━━━━━━━━━━━━━━━━━━━
+Last Update : ${current_time}
+━━━━━━━━━━━━━━━━━━━━━━━
+ 🤖 Bot Version 0.23.1
+EOF
+)
+
+keyboard=$(jq -n \
+    --arg text "$button_text_with_emoji" \
+    --arg url "$button_url" \
+    '{inline_keyboard: [[{text: $text, url: $url}]]}')
+
+data=$(jq -n \
+    --arg chat_id "$CHAT_ID" \
+    --arg text "$monospace_message" \
+    --argjson reply_markup "$keyboard" \
+    '{chat_id: $chat_id, text: $text, parse_mode: "HTML", reply_markup: $reply_markup}')
+
+TELEGRAM_URL="${TELEGRAM_API}/bot${BOT_TOKEN}/sendMessage"
+
+if curl -fsS --max-time 20 \
+    -X POST "$TELEGRAM_URL" \
+    -H "Content-Type: application/json" \
+    -d "$data" >/dev/null; then
+
+    echo -e "${CYAN}────────────────────────────────────────────────${NC}"
+    echo -e "${GREEN}❖ Pesan berhasil dikirim ke Telegram.${NC}"
+    echo -e "${CYAN}────────────────────────────────────────────────${NC}"
+else
+    echo -e "${RED}❖ Gagal mengirim pesan ke Telegram.${NC}"
+    exit 1
+fi

@@ -1,0 +1,166 @@
+#!/bin/bash
+
+# Check if the script is run as root
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+
+clear
+clearlog
+sleep 3m
+
+# Path to Xray access log file
+log_file="/var/lib/marzban/assets/access.log"
+
+# Path to store logs for users exceeding the IP limit
+log_folder="/etc/autokill/logs"
+
+# API information
+domain=$(cat /etc/data/domain)
+token=$(cat /etc/data/token.json | jq -r .access_token)
+port=$(netstat -tunlp | grep 'python' | awk '{split($4, a, ":"); print a[2]}')
+
+# Load penalty_time from configuration file (in minutes)
+penalty_time_minutes=$(cat "/var/lib/marzban/penalty_time.conf")
+
+# Convert penalty_time to seconds
+penalty_time_seconds=$((penalty_time_minutes * 60))
+
+# Configuration bot token + chatid, load values
+source "/etc/autokill/telegram_config.conf"
+
+# Path to store penalty timestamp logs
+penalty_log_folder="/etc/autokill/penalty_logs"
+
+# Function to limit connections based on IP for a specific account type
+limit_connections() {
+    local protocol="$1"
+
+    # Load max_allowed_ips and penalty_time from configuration file
+    source "/var/lib/marzban/max_ips.conf"
+
+    # Counter for numbering users
+    counter=1
+
+    # Get all usernames for the specified protocol from API
+    usernames=$(curl -sX GET "https://${domain}:${port}/api/users" -H "accept: application/json" -H "Authorization: Bearer ${token}" | jq -r --arg protocol "$protocol" '.users[] | select(.proxies | has($protocol)) | .username')
+
+    # Loop through each username and find connected IPs
+    for account in $usernames; do
+        echo "$counter. User: $account"
+
+        # Get user IPs from log file
+        connected_ips=$(grep -E "$account" "$log_file" | awk '{print $3}' | awk -F: '{print $1}' | grep -Eo "([0-9]{1,3}\.){3}[0-9]{1,3}" | sort -n -u)
+
+        if [ -z "$connected_ips" ]; then
+            echo "No connected IPs for this user."
+        else
+            echo "Connected IPs:"
+            # Loop through each connected IP and add numbering
+            ip_counter=1
+            while read -r ip; do
+                echo "  $ip_counter. $ip"
+                ((ip_counter++))
+            done <<< "$connected_ips"
+
+            # Check if the number of unique connected IPs exceeds the limit
+            unique_ip_count=$(echo "$connected_ips" | wc -l)
+            if [ "$unique_ip_count" -gt "$max_allowed_ips" ]; then
+                echo "Limiting connections for user $account. Connected IPs: $connected_ips"
+                # Disable user using API
+                curl -X 'PUT' \
+                    "https://${domain}:${port}/api/user/${account}" \
+                    -H 'accept: application/json' \
+                    -H "Authorization: Bearer ${token}" \
+                    -H 'Content-Type: application/json' \
+                    -d '{
+                        "status": "disabled"
+                    }'  &> /dev/null
+
+                # Save penalty timestamp for the user
+                penalty_timestamp=$(date +"%s")
+                echo "$penalty_timestamp" > "$penalty_log_folder/${account}_penalty_timestamp.txt"
+ 
+                # Kirim pesan alert ke bot Telegram
+                MESSAGE="⚠️ ALERT: User $account at server $domain exceeded the IP limit. Connected IPs: $connected_ips. Disabled until penalty time is over [${penalty_time_minutes} Minutes]."
+                curl -s "https://api.telegram.org/bot$botToken/sendMessage" \
+                --data-urlencode "chat_id=$chatId" \
+                --data-urlencode "text=$MESSAGE" > /dev/null
+
+                # Save log for the user in the specified folder
+                echo "User $account exceeded the IP limit. Connected IPs: $connected_ips. Disabled until penalty time is over." >> "$log_folder/user_limit_exceeded.log"
+            fi
+        fi
+
+        # Increment the counter
+        ((counter++))
+    done
+}
+
+# Function to enable disabled users based on penalty time
+enable_disabled_users() {
+    # Get disabled users from API
+    disabled_users_response=$(curl -sX GET "https://${domain}:${port}/api/users?status=disabled" -H "accept: application/json" -H "Authorization: Bearer ${token}")
+
+    # Extract usernames from the response
+    disabled_usernames=$(echo "$disabled_users_response" | jq -r '.users[].username')
+
+    # Loop through each disabled user
+    for disabled_user in $disabled_usernames; do
+        # Check if penalty time has passed
+        penalty_timestamp_file="$penalty_log_folder/${disabled_user}_penalty_timestamp.txt"
+        if [ -e "$penalty_timestamp_file" ]; then
+            current_timestamp=$(date +"%s")
+            penalty_timestamp=$(cat "$penalty_timestamp_file")
+            penalty_duration=$((current_timestamp - penalty_timestamp))
+
+            # Debugging output
+            echo "User: $disabled_user, penalty_duration: $penalty_duration" >> "$log_folder/debug_penalty_duration.log"
+
+            if [ "$penalty_duration" -ge "$penalty_time_seconds" ]; then
+                # Enable user using API
+                response=$(curl -X 'PUT' \
+                    "https://${domain}:${port}/api/user/${disabled_user}" \
+                    -H 'accept: application/json' \
+                    -H "Authorization: Bearer ${token}" \
+                    -H 'Content-Type: application/json' \
+                    -d '{"status": "active"}' 2>&1)
+
+                if [ $? -eq 0 ]; then
+                    # Remove penalty timestamp file
+                    rm "$penalty_timestamp_file"
+                # Kirim pesan alert ke bot Telegram
+                    MESSAGE="✅ ALERT: User $disabled_user at server $domain penalty time is over. Re-enabled."
+                    curl -s "https://api.telegram.org/bot$botToken/sendMessage" \
+                            --data-urlencode "chat_id=$chatId" \
+                            --data-urlencode "text=$MESSAGE" > /dev/null
+
+                    echo "User $disabled_user penalty time is over. Re-enabled." >> "$log_folder/user_reenabled.log"
+                else
+                    echo "Error enabling user $disabled_user: $response" >> "$log_folder/user_reenabled_gagal.log"
+                fi
+            fi
+        fi
+    done
+}
+
+# Main menu
+echo "Analyzing connected IPs for all protocols..."
+
+# Limit connections for Trojan accounts
+limit_connections "trojan"
+
+# Limit connections for VMess accounts
+limit_connections "vmess"
+
+# Limit connections for VLess accounts
+limit_connections "vless"
+
+# Limit connections for VLess accounts
+limit_connections "shadowsocks"
+
+# Enable disabled users based on penalty time
+enable_disabled_users
+
+echo "Script execution complete."

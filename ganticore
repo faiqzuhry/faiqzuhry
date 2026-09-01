@@ -1,0 +1,97 @@
+#!/bin/bash
+
+# Check if the script is run as root
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+# ========================================
+# Script Pembaruan Xray Core Official
+# ========================================
+
+# Function to print a stylish header
+print_header() {
+    echo "**************************************************"
+    echo "*                                                *"
+    echo "*          Change Xray Core Options Menu         *"
+    echo "*                                                *"
+    echo "**************************************************"
+    echo ""
+}
+
+# Lokasi file .env
+env_file="/opt/marzban/.env"
+
+# Lokasi Xray executable
+xray_executable="/var/lib/marzban/core/xray"
+
+# Meminta pengguna memasukkan versi Xray yang diinginkan
+clear
+print_header
+read -p "Masukkan versi Xray Core Official yang diinginkan (contoh format: 1.8.16): " version
+
+# URL dari sumber Xray
+xray_url="https://github.com/XTLS/Xray-core/releases/download/"
+arch="Xray-linux-64.zip"
+download_url="${xray_url}v${version}/${arch}"
+
+# Lokasi tempat menyimpan Xray
+xray_dir="/var/lib/marzban/core"
+
+# Membuat direktori jika belum ada
+mkdir -p $xray_dir
+
+# Menampilkan pesan progres
+echo -e "\nMemulai pembaruan Xray Core Official...\n"
+
+# Mengunduh Xray dari URL yang diberikan
+echo "Mengunduh Xray..."
+
+# Menggunakan opsi --spider untuk menguji ketersediaan URL tanpa mengunduhnya
+if wget --spider $download_url 2>&1 | grep -q '404 Not Found'; then
+    echo "Error: Versi Xray tidak ditemukan atau URL tidak valid."
+    exit 1
+fi
+
+# Melanjutkan mengunduh jika URL valid
+wget $download_url -O $xray_dir/$arch
+
+# Memeriksa apakah unduhan berhasil
+if [ $? -ne 0 ]; then
+    echo "Error: Gagal mengunduh Xray dari URL yang diberikan."
+    exit 1
+fi
+
+# Mengekstrak arsip Xray
+echo "Mengekstrak Xray..."
+unzip -o $xray_dir/$arch -d $xray_dir
+
+# Memberikan izin eksekusi jika diperlukan
+chmod +x $xray_dir/xray
+
+# Menampilkan pesan sukses
+echo -e "\nPembaruan Xray Core Official berhasil!\n"
+
+# Cek apakah variabel XRAY_EXECUTABLE_PATH sudah ada di file .env tanpa tanda pagar
+if grep -q "^XRAY_EXECUTABLE_PATH=" "$env_file" && ! grep -q "^# XRAY_EXECUTABLE_PATH=" "$env_file"; then
+    echo "Variabel XRAY_EXECUTABLE_PATH sudah ada di $env_file tanpa tanda pagar. Tidak perlu diubah."
+else
+    # Jika tidak ada atau sudah ada dengan tanda pagar, tambahkan variabel ke file .env
+    echo "XRAY_EXECUTABLE_PATH=\"$xray_executable\"" >> "$env_file"
+    echo "Variabel XRAY_EXECUTABLE_PATH telah ditambahkan ke $env_file."
+fi
+
+# Menampilkan pesan progres
+echo -e "\nMemulai ulang layanan Marzban...\n"
+
+# Restart layanan Marzban menggunakan Docker Compose
+cd /opt/marzban
+docker compose down
+docker compose up -d
+marzban logs
+
+# Membersihkan file Xray yang diunduh
+rm $xray_dir/$arch
+
+# Menampilkan pesan sukses
+echo -e "\nPergantian core Xray selesai.\n"

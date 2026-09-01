@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# Check if the script is run as root
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Skrip ini harus dijalankan sebagai root."
+    exit 1
+fi
+
+# Pastikan argumen username telah diberikan
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 [username]"
+    exit 1
+fi
+
+# Mengambil nilai domain dan token dari file
+domain=$(cat /etc/data/domain)
+token=$(cat /etc/data/token.json | jq -r .access_token)
+port=$(netstat -tunlp | grep 'python' | awk '{split($4, a, ":"); print a[2]}')
+
+# Mengambil username dari argumen
+username=$1
+
+# Mengirim permintaan DELETE menggunakan curl
+curl -s -X 'DELETE' \
+    "https://${domain}:${port}/api/user/${username}" \
+    -H 'accept: application/json' \
+    -H "Authorization: Bearer ${token}" > /dev/null
+
+# Memeriksa apakah penghapusan berhasil
+clear
+if [ $? -eq 0 ]; then
+    echo "User ${username} telah berhasil dihapus."
+else
+    echo "Gagal menghapus user ${username}. Periksa kembali argumen dan token Anda atau cek username sudah terdaftar pada database."
+fi

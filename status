@@ -1,0 +1,142 @@
+#!/bin/bash
+
+# Code for service
+export RED='\033[0;31m';
+export GREEN='\033[0;32m';
+export YELLOW='\033[0;33m';
+export BLUE='\033[0;34m';
+export PURPLE='\033[0;35m';
+export CYAN='\033[0;36m';
+export LIGHT='\033[0;37m';
+export NC='\033[0m';
+
+# Export Banner Status Information
+export ERROR="[${RED}ERROR${NC}]";
+export INFO="[${YELLOW}INFO${NC}]";
+export OKEY="[${GREEN}OKEY${NC}]";
+export PENDING="[${YELLOW}PENDING${NC}]";
+export SEND="[${YELLOW}SEND${NC}]";
+export RECEIVE="[${YELLOW}RECEIVE${NC}]";
+
+# Pastikan argumen username telah diberikan
+if [ $# -eq 0 ]; then
+    echo "Pastikan argumen username sudah diberikan, contoh Usage: $0 [username]"
+    exit 1
+fi
+
+# Function to convert bytes to human-readable format
+format_data() {
+  awk '{split("B KB MB GB TB PB", v); s = 1; while ($1 >= 1024) {$1 /= 1024; s++} printf "%.2f %s", $1, v[s]}'
+}
+
+# Function to convert expiration timestamp to human-readable format
+convert_expiration() {
+  timestamp="${1}"
+  if [ "${timestamp}" == "null" ]; then
+    echo "Always ON"
+  else
+    date -d "@${timestamp}" '+%Y-%m-%d %H:%M:%S'
+  fi
+}
+
+#variabel yang diperlukan
+domain=$(cat /etc/data/domain)
+token=$(cat /etc/data/token.json | jq -r .access_token)
+port=$(netstat -tunlp | grep 'python' | awk '{split($4, a, ":"); print a[2]}')
+
+# Mengambil username dari argumen
+username=$1
+
+# Mendapatkan respons dari API
+response=$(curl -s -X 'GET' \
+  "https://${domain}:${port}/api/user/${username}" \
+  -H 'accept: application/json' \
+  -H "Authorization: Bearer ${token}"
+)
+
+# Memeriksa apakah respons kosong
+if [ -z "$response" ]; then
+    echo "Error: Tidak dapat mengambil informasi pengguna dari API."
+    exit 1
+fi
+
+# Memeriksa apakah respons berisi pesan "User not found"
+if [ "$(echo "$response" | jq -r '.detail')" = "User not found" ]; then
+    echo "Error: Pengguna dengan username '$username' tidak ditemukan."
+    exit 1
+fi
+
+# Definisikan variabel dari respons header
+username=$(echo "$response" | jq -r '.username')
+status=$(echo "$response" | jq -r '.status')
+created_at=$(echo "$response" | jq -r '.created_at')
+reset_strategy=$(echo "$response" | jq -r '.data_limit_reset_strategy')
+note=$(echo "$response" | jq -r '.note')
+expire=$(echo "$response" | jq -r '.expire')
+data_limit=$(echo "$response" | jq -r '.data_limit')
+used_traffic=$(echo "$response" | jq -r '.used_traffic')
+lifetime_used_traffic=$(echo "$response" | jq -r '.lifetime_used_traffic')
+protocol=$(jq -r '.proxies | keys_unsorted[0]' <<< "${response}" | sed 's/shadowsocks/ss/')
+
+# Tambahkan offset waktu langsung ke waktu API jika api_time tidak null
+wib_time=$(date --date="${created_at} WIB+7 hours" +"%Y-%m-%d %H:%M:%S")
+
+# Replace null values and specific reset strategies
+    case "${reset_strategy}" in
+        "no_reset") reset_strategy="loss_doll";;
+        "day") reset_strategy="harian";;
+        "week") reset_strategy="mingguan";;
+        "month") reset_strategy="bulanan";;
+        "year") reset_strategy="tahunan";;
+esac
+
+# Replace values and specific status
+    case "${status}" in
+        "active") status="${GREEN}Active${NC}";;
+        "disabled") status="${CYAN}Disabled${NC}";;
+        "on_hold") status="${CYAN}On_Hold${NC}";;
+        "limited") status="${RED}Limited${NC}";;
+        "expired") status="${RED}Expired${NC}";;
+esac
+
+# Convert bytes to human-readable format
+used_traffic_human=$(echo "${used_traffic}" | format_data)
+lifetime_used_traffic_human=$(echo "${lifetime_used_traffic}" | format_data)
+
+# Check if data limit is 0.00 KB and replace with Unlimited
+if [ "${data_limit}" == "null" ]; then
+      data_limit_human="Unlimited"
+else
+      data_limit_human=$(echo "${data_limit}" | format_data)
+fi
+
+# Check if note is null
+if [ "${note}" == "null" ]; then
+      note_human="Tidak ada catatan disini"
+else
+      note_human=$(echo "${note}")
+fi
+
+# Function to convert expiration timestamp to human-readable format
+convert_expiration() {
+  timestamp="${1}"
+  if [ "${timestamp}" == "null" ]; then
+    echo "Always ON"
+  else
+    date -d "@${timestamp}" '+%Y-%m-%d %H:%M:%S'
+  fi
+}
+expires_at_human=$(convert_expiration "${expire}")
+
+# Cetak informasi dalam format yang diinginkan
+echo -e "╭───────────────────────────╮"
+echo -e "│ Username: $username"
+echo -e "│ Protocol Xray: $protocol"
+echo -e "│ Status: $status"
+echo -e "│ Data Limit: $used_traffic_human / $data_limit_human"
+echo -e "│ Total Penggunaan Data: $lifetime_used_traffic_human"
+echo -e "│ Reset strategy: $reset_strategy"
+echo -e "│ Akun dibuat: $wib_time"
+echo -e "│ Note: $note_human"
+echo -e "│ Expired: $expires_at_human"
+echo -e "╰───────────────────────────╯"
