@@ -1125,32 +1125,7 @@ cat > /etc/logrotate.d/marzban <<'EOF'
 EOF
 
 
-# ============================================================
-# XRAY CORE - ALWAYS LATEST
-# ============================================================
-update_xray_core_latest() {
-    colorized_echo cyan "Memeriksa Xray-core terbaru..."
-
-    if ! command -v marzban >/dev/null 2>&1; then
-        colorized_echo yellow "Perintah marzban belum tersedia; melewati update core."
-        return 0
-    fi
-
-    # Official Marzban command: resolves and installs the latest Xray-core.
-    if marzban core-update; then
-        colorized_echo green "Xray-core terbaru berhasil dipasang."
-    else
-        colorized_echo red "Gagal memperbarui Xray-core."
-        return 1
-    fi
-}
-
 stage09() {
-    update_xray_core_latest || {
-        colorized_echo red "Update Xray-core gagal."
-        return 1
-    }
-
     set -e
 cd /opt/marzban
 
