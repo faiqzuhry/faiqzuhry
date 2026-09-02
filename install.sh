@@ -2,7 +2,7 @@
 # LingVPN Marzban Installer - Auto Resume
 # Support: Debian 11/12/13 + Ubuntu 20.04/22.04
 
-sfile="https://raw.githubusercontent.com/faiqzuhry/Faiq-zuhry/main"
+sfile="https://raw.githubusercontent.com/faiqzuhry/faiqzuhry/main"
 # TIMEZONE POLICY: NEUTRAL — jangan set timezone berdasarkan IP/lokasi.
 STATE_DIR="/var/lib/lingvpn-install/state"
 LOG_FILE="/root/lingvpn-install.log"
@@ -811,7 +811,7 @@ apt-get install -y python3 >/dev/null 2>&1
 install_bot_usage() {
     log "Memasang BOT Usage..."
 
-    local usage_url="https://raw.githubusercontent.com/faiqzuhry/Faiq-zuhry/main/usage.py"
+    local usage_url="https://raw.githubusercontent.com/faiqzuhry/faiqzuhry/main/usage.py"
     local venv="/opt/bot-usage-venv"
     local legacy_venv="/opt/bot-usage-env"
     local usage_file="/usr/local/bin/usage.py"
