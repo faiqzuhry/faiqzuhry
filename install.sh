@@ -1124,7 +1124,33 @@ cat > /etc/logrotate.d/marzban <<'EOF'
 }
 EOF
 
+
+# ============================================================
+# XRAY CORE - ALWAYS LATEST
+# ============================================================
+update_xray_core_latest() {
+    colorized_echo cyan "Memeriksa Xray-core terbaru..."
+
+    if ! command -v marzban >/dev/null 2>&1; then
+        colorized_echo yellow "Perintah marzban belum tersedia; melewati update core."
+        return 0
+    fi
+
+    # Official Marzban command: resolves and installs the latest Xray-core.
+    if marzban core-update; then
+        colorized_echo green "Xray-core terbaru berhasil dipasang."
+    else
+        colorized_echo red "Gagal memperbarui Xray-core."
+        return 1
+    fi
+}
+
 stage09() {
+    update_xray_core_latest || {
+        colorized_echo red "Update Xray-core gagal."
+        return 1
+    }
+
     set -e
 cd /opt/marzban
 
@@ -1153,7 +1179,7 @@ sed -i \
 # Pastikan image panel dan migration berasal dari upstream Marzban yang sama.
 # Ini mencegah compose custom lama menjalankan kode baru dengan schema lama.
 if grep -qE 'image:[[:space:]]*gozargah/marzban:' /opt/marzban/docker-compose.yml; then
-    sed -i -E 's#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\1latest#' /opt/marzban/docker-compose.yml
+    sed -i -E 's#image:[[:space:]]*gozargah/marzban:latest gozargah/marzban:latest' /opt/marzban/docker-compose.yml
 fi
 
 # Migration tanpa membuat backup database otomatis sebelum migration.
@@ -1173,11 +1199,19 @@ else
     return 1
 fi
 
-# Download image terbaru sebelum migration.
-$COMPOSE_CMD pull marzban >> /var/log/marzban-bootstrap.log 2>&1 || {
-    colorized_echo red "Gagal mengambil image Marzban."
+# Pastikan image Marzban v0.8.4 tersedia sebelum migration.
+# Pull langsung dibuat eksplisit agar kegagalan tidak tersembunyi.
+MARZBAN_IMAGE="gozargah/marzban:latest"
+colorized_echo cyan "Mengambil image ${MARZBAN_IMAGE}..."
+if ! docker pull "${MARZBAN_IMAGE}" >> /var/log/marzban-bootstrap.log 2>&1; then
+    colorized_echo red "Gagal mengambil image Marzban ${MARZBAN_IMAGE}."
+    echo "===== docker pull error ====="
+    tail -n 80 /var/log/marzban-bootstrap.log || true
     return 1
-}
+fi
+
+# Pastikan compose menunjuk ke image yang benar-benar tersedia.
+sed -i -E 's#image:[[:space:]]*gozargah/marzban:latest gozargah/marzban:latest' /opt/marzban/docker-compose.yml
 
 # Jalankan Alembic SEBELUM panel dijalankan.
 # Dengan demikian query admin baru tidak dieksekusi pada schema lama.
@@ -1203,13 +1237,58 @@ for i in $(seq 1 30); do
     sleep 2
 done
 
-# Import admin setelah migration, bukan sebelumnya.
+# Import admin setelah migration.
+# Kompatibilitas dengan model Admin pada image Marzban saat ini:
+# telegram_id harus integer dan discord_webhook berupa string.
+# Patch dilakukan DI DALAM container sebelum CLI dijalankan.
 if command -v marzban >/dev/null 2>&1; then
-    marzban cli admin import-from-env -y || {
+    colorized_echo cyan "Menyiapkan kompatibilitas CLI admin Marzban..."
+
+    $COMPOSE_CMD exec -T marzban python - <<'PY'
+from pathlib import Path
+
+p = Path("/code/cli/admin.py")
+s = p.read_text(encoding="utf-8")
+original = s
+
+# Existing-admin path
+s = s.replace(
+    'AdminPartialModify(password=password, is_sudo=True)',
+    'AdminPartialModify(password=password, is_sudo=True, telegram_id=0, discord_webhook="")'
+)
+s = s.replace(
+    'AdminPartialModify(password=password, is_sudo=True, telegram_id="", discord_webhook="")',
+    'AdminPartialModify(password=password, is_sudo=True, telegram_id=0, discord_webhook="")'
+)
+
+# New-admin path
+s = s.replace(
+    'AdminCreate(username=username, password=password, is_sudo=True)',
+    'AdminCreate(username=username, password=password, is_sudo=True, telegram_id=0, discord_webhook="")'
+)
+s = s.replace(
+    'AdminCreate(username=username, password=password, is_sudo=True, telegram_id="", discord_webhook="")',
+    'AdminCreate(username=username, password=password, is_sudo=True, telegram_id=0, discord_webhook="")'
+)
+
+if s != original:
+    p.write_text(s, encoding="utf-8")
+    print("ADMIN_CLI_PATCHED")
+else:
+    print("ADMIN_CLI_ALREADY_COMPATIBLE_OR_PATTERN_CHANGED")
+PY
+
+    if ! marzban cli admin import-from-env -y; then
         colorized_echo red "Import admin gagal."
         $COMPOSE_CMD logs --tail=80 marzban || true
         return 1
-    }
+    fi
+
+    # Remove bootstrap credentials after successful import.
+    if [ -f /opt/marzban/.env ]; then
+        sed -i             '/^[[:space:]]*SUDO_USERNAME[[:space:]]*=/d;
+             /^[[:space:]]*SUDO_PASSWORD[[:space:]]*=/d'             /opt/marzban/.env
+    fi
 fi
 
 # Hapus kredensial sementara dari .env setelah admin berhasil dibuat.
@@ -1218,8 +1297,7 @@ sed -i "s/SUDO_PASSWORD = \"${passpanel}\"/# SUDO_PASSWORD = \"admin\"/" /opt/ma
 
 $COMPOSE_CMD up -d --remove-orphans
 cd
-echo "Tunggu 30 detik untuk generate token API"
-sleep 30s
+echo "Marzban siap; melanjutkan ke pembuatan token API."
 
 }
 
@@ -1227,11 +1305,28 @@ sleep 30s
 stage10() {
     set -e
 #instal token
-curl -X 'POST' \
+if ! curl -4fsS -X POST \
   "https://${domain}:${port}/api/admin/token" \
   -H 'accept: application/json' \
   -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d "grant_type=password&username=${userpanel}&password=${passpanel}&scope=&client_id=&client_secret=" > /etc/data/token.json
+  --data-urlencode "grant_type=password" \
+  --data-urlencode "username=${userpanel}" \
+  --data-urlencode "password=${passpanel}" \
+  --data-urlencode "scope=" \
+  --data-urlencode "client_id=" \
+  --data-urlencode "client_secret=" > /etc/data/token.json; then
+    colorized_echo red "Gagal membuat token API Marzban."
+    cat /etc/data/token.json 2>/dev/null || true
+    return 1
+fi
+
+if command -v jq >/dev/null 2>&1; then
+    jq -e '.access_token' /etc/data/token.json >/dev/null 2>&1 || {
+        colorized_echo red "Respons token API tidak valid."
+        cat /etc/data/token.json
+        return 1
+    }
+fi
 cd
 sed -i -e 's/\r$//' /usr/bin/routing
 if command -v neofetch >/dev/null 2>&1; then
