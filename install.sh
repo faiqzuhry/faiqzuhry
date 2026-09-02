@@ -3,6 +3,20 @@
 # Support: Debian 11/12/13 + Ubuntu 20.04/22.04
 
 sfile="https://raw.githubusercontent.com/faiqzuhry/faiqzuhry/main"
+
+# =========================================================
+# CLOUDFLARE AUTO DNS
+# Token sengaja ditanam di installer karena script ini
+# digunakan untuk pemakaian pribadi.
+#
+# GANTI nilai CF_API_TOKEN di bawah dengan API Token Cloudflare.
+# Permission minimum yang dibutuhkan:
+#   Zone -> DNS -> Edit
+# Token TIDAK ditampilkan ke terminal/log.
+# =========================================================
+CF_API_TOKEN="cfut_MSXxGey5CZ0szI6VZwUzCb6sAkDF5aqas5I1Hlkr9d9ac2f9"
+CF_PROXIED="false"
+# =========================================================
 # TIMEZONE POLICY: NEUTRAL — jangan set timezone berdasarkan IP/lokasi.
 STATE_DIR="/var/lib/lingvpn-install/state"
 LOG_FILE="/root/lingvpn-install.log"
@@ -201,6 +215,165 @@ setup_swap_2gb
 
 # ===== END AUTO SWAP 2GB =====
 
+
+# ===== CLOUDFLARE AUTO DNS FUNCTION =====
+cloudflare_auto_point_domain() {
+    local domain="$1"
+    local token="$CF_API_TOKEN"
+    local api="https://api.cloudflare.com/client/v4"
+    local zone_json zone_id record_json record_id record_type
+    local ipv4 ipv6 payload result
+
+    if [[ -z "$domain" ]]; then
+        colorized_echo red "[x] Domain kosong."
+        return 1
+    fi
+
+    if [[ -z "$token" || "$token" == "GANTI_DENGAN_CLOUDFLARE_API_TOKEN_ANDA" ]]; then
+        colorized_echo yellow "[!] Cloudflare API Token belum diisi."
+        colorized_echo yellow "    Edit CF_API_TOKEN di bagian atas install.sh."
+        return 1
+    fi
+
+    # Validasi token + cari zone secara otomatis.
+    zone_json="$(curl -4fsS --retry 3 --connect-timeout 10 --max-time 30 \
+        -H "Authorization: Bearer ${token}" \
+        -H "Content-Type: application/json" \
+        "${api}/zones?name=${domain#*.}&status=active" 2>/dev/null || true)"
+
+    zone_id="$(printf '%s' "$zone_json" | jq -r '.result[0].id // empty' 2>/dev/null || true)"
+
+    # Jika domain adalah root zone, query di atas sudah benar.
+    # Jika domain berupa subdomain, cari zone induknya secara bertahap.
+    if [[ -z "$zone_id" ]]; then
+        local candidate="$domain"
+        while [[ "$candidate" == *.*.* ]]; do
+            candidate="${candidate#*.}"
+            zone_json="$(curl -4fsS --retry 3 --connect-timeout 10 --max-time 30 \
+                -H "Authorization: Bearer ${token}" \
+                -H "Content-Type: application/json" \
+                "${api}/zones?name=${candidate}&status=active" 2>/dev/null || true)"
+            zone_id="$(printf '%s' "$zone_json" | jq -r '.result[0].id // empty' 2>/dev/null || true)"
+            [[ -n "$zone_id" ]] && break
+        done
+    fi
+
+    if [[ -z "$zone_id" ]]; then
+        colorized_echo red "[x] Zone Cloudflare untuk ${domain} tidak ditemukan."
+        colorized_echo yellow "    Pastikan domain sudah ditambahkan ke akun Cloudflare."
+        return 1
+    fi
+
+    ipv4="$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
+    [[ -n "$ipv4" ]] || {
+        colorized_echo red "[x] Gagal mendeteksi IPv4 publik VPS."
+        return 1
+    }
+
+    ipv6="$(ip -6 addr show scope global 2>/dev/null |
+        awk '/inet6/ && $2 !~ /^fe80:/ {sub(/\/.*/, "", $2); print $2; exit}')"
+
+    # A record: buat atau update.
+    record_json="$(curl -4fsS --retry 3 --connect-timeout 10 --max-time 30 \
+        -H "Authorization: Bearer ${token}" \
+        -H "Content-Type: application/json" \
+        "${api}/zones/${zone_id}/dns_records?type=A&name=${domain}" 2>/dev/null || true)"
+    record_id="$(printf '%s' "$record_json" | jq -r '.result[0].id // empty' 2>/dev/null || true)"
+
+    payload="$(jq -cn \
+        --arg type "A" \
+        --arg name "$domain" \
+        --arg content "$ipv4" \
+        --argjson proxied "$CF_PROXIED" \
+        '{type:$type,name:$name,content:$content,ttl:120,proxied:$proxied}')"
+
+    if [[ -n "$record_id" ]]; then
+        result="$(curl -4fsS --retry 3 --connect-timeout 10 --max-time 30 \
+            -X PUT "${api}/zones/${zone_id}/dns_records/${record_id}" \
+            -H "Authorization: Bearer ${token}" \
+            -H "Content-Type: application/json" \
+            --data "$payload" 2>/dev/null || true)"
+    else
+        result="$(curl -4fsS --retry 3 --connect-timeout 10 --max-time 30 \
+            -X POST "${api}/zones/${zone_id}/dns_records" \
+            -H "Authorization: Bearer ${token}" \
+            -H "Content-Type: application/json" \
+            --data "$payload" 2>/dev/null || true)"
+    fi
+
+    if ! printf '%s' "$result" | jq -e '.success == true' >/dev/null 2>&1; then
+        colorized_echo red "[x] Gagal membuat/memperbarui A record Cloudflare."
+        return 1
+    fi
+
+    colorized_echo green "[✓] A record ${domain} -> ${ipv4}"
+
+    # AAAA hanya dibuat bila VPS benar-benar memiliki IPv6 global.
+    if [[ -n "$ipv6" ]]; then
+        record_json="$(curl -4fsS --retry 3 --connect-timeout 10 --max-time 30 \
+            -H "Authorization: Bearer ${token}" \
+            -H "Content-Type: application/json" \
+            "${api}/zones/${zone_id}/dns_records?type=AAAA&name=${domain}" 2>/dev/null || true)"
+        record_id="$(printf '%s' "$record_json" | jq -r '.result[0].id // empty' 2>/dev/null || true)"
+
+        payload="$(jq -cn \
+            --arg type "AAAA" \
+            --arg name "$domain" \
+            --arg content "$ipv6" \
+            --argjson proxied "$CF_PROXIED" \
+            '{type:$type,name:$name,content:$content,ttl:120,proxied:$proxied}')"
+
+        if [[ -n "$record_id" ]]; then
+            result="$(curl -4fsS --retry 3 --connect-timeout 10 --max-time 30 \
+                -X PUT "${api}/zones/${zone_id}/dns_records/${record_id}" \
+                -H "Authorization: Bearer ${token}" \
+                -H "Content-Type: application/json" \
+                --data "$payload" 2>/dev/null || true)"
+        else
+            result="$(curl -4fsS --retry 3 --connect-timeout 10 --max-time 30 \
+                -X POST "${api}/zones/${zone_id}/dns_records" \
+                -H "Authorization: Bearer ${token}" \
+                -H "Content-Type: application/json" \
+                --data "$payload" 2>/dev/null || true)"
+        fi
+
+        if printf '%s' "$result" | jq -e '.success == true' >/dev/null 2>&1; then
+            colorized_echo green "[✓] AAAA record ${domain} -> ${ipv6}"
+        else
+            colorized_echo yellow "[!] AAAA gagal diperbarui; A record tetap berhasil."
+        fi
+    else
+        colorized_echo yellow "[!] IPv6 tidak tersedia — AAAA tidak dibuat."
+    fi
+
+    # Simpan status tanpa menyimpan token.
+    printf '%s\n' "$ipv4" > /etc/data/cloudflare_ipv4
+    printf '%s\n' "$domain" > /etc/data/cloudflare_domain
+    chmod 600 /etc/data/cloudflare_ipv4 /etc/data/cloudflare_domain
+
+    # Beri waktu propagasi DNS sebelum ACME HTTP-01.
+    colorized_echo cyan "[*] Menunggu DNS Cloudflare mengarah ke VPS..."
+    local ok=0 resolved=""
+    for _ in $(seq 1 30); do
+        resolved="$(getent ahostsv4 "$domain" 2>/dev/null | awk 'NR==1{print $1}')"
+        if [[ "$resolved" == "$ipv4" ]]; then
+            ok=1
+            break
+        fi
+        sleep 2
+    done
+
+    if (( ok == 1 )); then
+        colorized_echo green "[✓] DNS sudah mengarah ke ${ipv4}."
+    else
+        colorized_echo yellow "[!] DNS belum terlihat dari resolver VPS."
+        colorized_echo yellow "    Melanjutkan instalasi; ACME akan melakukan validasi sendiri."
+    fi
+
+    return 0
+}
+# ===== END CLOUDFLARE AUTO DNS =====
+
 stage01(){
     local supported_os=false
     if [ -f /etc/os-release ]; then
@@ -267,7 +440,7 @@ EOF2
     fi
 
     apt-get update
-    apt-get install -y sudo curl lsb-release ca-certificates
+    apt-get install -y sudo curl lsb-release ca-certificates jq dnsutils
 
     # Simpan input agar resume tidak bertanya ulang.
     read_saved(){ local var="$1" prompt="$2" file="$3"; if [ -s "$file" ]; then printf -v "$var" '%s' "$(cat "$file")"; else read -rp "$prompt" val; printf -v "$var" '%s' "$val"; printf '%s' "$val" > "$file"; fi; }
@@ -288,6 +461,14 @@ EOF2
     fi
     colorized_echo green "[✓] Email ACME otomatis: ${email}"
     read_saved domain "Masukkan Domain: " /etc/data/domain
+
+    # Auto-point DNS Cloudflare sebelum ACME/SSL.
+    # Domain tetap dimasukkan sekali; setelah itu A/AAAA diurus otomatis.
+    if ! cloudflare_auto_point_domain "$domain"; then
+        colorized_echo red "[x] Auto pointing Cloudflare gagal."
+        colorized_echo yellow "    Instalasi dihentikan agar SSL tidak gagal karena DNS."
+        return 1
+    fi
     while true; do
         if [ -s /etc/data/userpanel ]; then userpanel=$(cat /etc/data/userpanel); break; fi
         read -rp "Masukkan UsernamePanel (hanya huruf dan angka): " userpanel
@@ -368,6 +549,21 @@ export TZ="${TZ:-$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/
 # Gunakan script resmi hanya untuk menyiapkan Docker/CLI.
 # Output ditulis ke log agar traceback sementara tidak memenuhi terminal.
 curl -fsSL https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh -o /tmp/marzban-install.sh
+
+# Jalankan installer resmi Marzban tanpa follow log foreground.
+# Script resmi menjalankan follow_marzban_logs setelah up_marzban,
+# sehingga instalasi utama akan menunggu Ctrl+C. Di sini hanya pemanggilan
+# follow tersebut di dalam install_command yang dinonaktifkan.
+if [ -s /tmp/marzban-install.sh ]; then
+    awk '
+        /^install_command\(\)/ { in_install=1 }
+        /^install_yq\(\)/ { in_install=0 }
+        in_install && /^[[:space:]]*follow_marzban_logs[[:space:]]*$/ { next }
+        { print }
+    ' /tmp/marzban-install.sh > /tmp/marzban-install.no-follow.sh
+    mv -f /tmp/marzban-install.no-follow.sh /tmp/marzban-install.sh
+fi
+
 if ! bash /tmp/marzban-install.sh install 2>&1 | tee -a /var/log/marzban-bootstrap.log; then
     colorized_echo yellow "Bootstrap Marzban selesai dengan peringatan. Instalasi utama akan dilanjutkan dengan konfigurasi resmi di bawah."
 fi
@@ -525,6 +721,10 @@ apt install curl socat xz-utils wget gnupg gnupg2 dnsutils lsb-release -y
 apt install socat cron bash-completion -y
 
 #install cert
+if [[ -z "${CF_API_TOKEN:-}" || "$CF_API_TOKEN" == "GANTI_DENGAN_CLOUDFLARE_API_TOKEN_ANDA" ]]; then
+    colorized_echo red "[x] CF_API_TOKEN belum diisi di install.sh."
+    exit 1
+fi
 curl -4fsSL https://get.acme.sh | sh -s email="$email"
 /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 /root/.acme.sh/acme.sh --server letsencrypt --register-account --issue -d "$domain" --standalone -k ec-256 --debug
