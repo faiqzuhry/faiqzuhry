@@ -271,7 +271,22 @@ EOF2
 
     # Simpan input agar resume tidak bertanya ulang.
     read_saved(){ local var="$1" prompt="$2" file="$3"; if [ -s "$file" ]; then printf -v "$var" '%s' "$(cat "$file")"; else read -rp "$prompt" val; printf -v "$var" '%s' "$val"; printf '%s' "$val" > "$file"; fi; }
-    read_saved email "Masukkan Email anda: " /etc/data/email
+    # Email ACME dibuat otomatis agar domain tidak pernah salah dipakai sebagai email.
+    # Jika file lama berisi domain / email tidak valid, otomatis diganti.
+    ACME_EMAIL="faiqzuhry@gmail.com"
+    if [ -s /etc/data/email ]; then
+        saved_email="$(tr -d '\r\n' < /etc/data/email)"
+        if [[ "$saved_email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+            email="$saved_email"
+        else
+            email="$ACME_EMAIL"
+            printf '%s\n' "$email" > /etc/data/email
+        fi
+    else
+        email="$ACME_EMAIL"
+        printf '%s\n' "$email" > /etc/data/email
+    fi
+    colorized_echo green "[✓] Email ACME otomatis: ${email}"
     read_saved domain "Masukkan Domain: " /etc/data/domain
     while true; do
         if [ -s /etc/data/userpanel ]; then userpanel=$(cat /etc/data/userpanel); break; fi
@@ -288,11 +303,18 @@ EOF2
         if [[ "$port" =~ ^[0-9]+$ ]] && ((port>=1 && port<=65535)) && ((port!=443 && port!=80)); then echo "$port" >/etc/data/port; break; fi
         echo "Port tidak valid."
     done
-    if [ -z "${choice:-}" ] && [ -s /etc/data/ipv6_choice ]; then choice=$(cat /etc/data/ipv6_choice); fi
-    if [ -z "${choice:-}" ]; then
-        echo "1. Aktifkan IPv6"; echo "2. Nonaktifkan IPv6"; read -rp "Masukkan nomor pilihan (1 atau 2): " choice
-        echo "$choice" >/etc/data/ipv6_choice
+    # IPv6 otomatis: gunakan "Ya" bila VPS memiliki IPv6 global/route IPv6,
+    # selain itu otomatis "Tidak". Tidak ada pertanyaan interaktif.
+    ipv6_addr="$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/ {print $2; exit}')"
+    ipv6_route="$(ip -6 route show default 2>/dev/null | head -n1)"
+    if [ -n "$ipv6_addr" ] || [ -n "$ipv6_route" ]; then
+        choice="1"
+        colorized_echo green "[✓] IPv6 terdeteksi — otomatis: Ya"
+    else
+        choice="2"
+        colorized_echo yellow "[!] IPv6 tidak terdeteksi — otomatis: Tidak"
     fi
+    printf '%s\n' "$choice" > /etc/data/ipv6_choice
 
     wget -q -O /etc/sysctl.conf "$sfile/sysctl.conf" || log "WARN: gagal mengambil sysctl.conf, memakai konfigurasi lama."
     case "$choice" in
@@ -503,8 +525,9 @@ apt install curl socat xz-utils wget gnupg gnupg2 dnsutils lsb-release -y
 apt install socat cron bash-completion -y
 
 #install cert
-curl -fsSL https://get.acme.sh | sh -s email="$email"
-/root/.acme.sh/acme.sh --server letsencrypt --register-account -m $email --issue -d $domain --standalone -k ec-256 --debug
+curl -4fsSL https://get.acme.sh | sh -s email="$email"
+/root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+/root/.acme.sh/acme.sh --server letsencrypt --register-account --issue -d "$domain" --standalone -k ec-256 --debug
 ~/.acme.sh/acme.sh --installcert -d "$domain" --fullchainpath /var/lib/marzban/xray.crt --keypath /var/lib/marzban/xray.key --ecc
 wget -O /var/lib/marzban/xray_config.json "$sfile/xray_config.json"
 
