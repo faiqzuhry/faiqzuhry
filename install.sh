@@ -2,7 +2,8 @@
 # LingVPN Marzban Installer - Auto Resume
 # Support: Debian 11/12/13 + Ubuntu 20.04/22.04
 
-sfile="https://raw.githubusercontent.com/faiqzuhry/faiqzuhry/main"
+sfile="https://raw.githubusercontent.com/faiqzuhry/Faiq-zuhry/main"
+# TIMEZONE POLICY: NEUTRAL — jangan set timezone berdasarkan IP/lokasi.
 STATE_DIR="/var/lib/lingvpn-install/state"
 LOG_FILE="/root/lingvpn-install.log"
 mkdir -p "$STATE_DIR"
@@ -23,6 +24,9 @@ colorized_echo() {
 }
 
 log(){ printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE"; }
+
+# Error helper used by optional BOT Usage installer and other non-fatal blocks.
+err(){ colorized_echo red "[ERROR] $*"; }
 
 if [ "$(id -u)" != "0" ]; then
     colorized_echo red "Error: Skrip ini harus dijalankan sebagai root."
@@ -331,6 +335,13 @@ gem install lolcat;
 
 stage03() {
     set -e
+
+# ===== TIMEZONE NEUTRAL =====
+# Installer tidak mengubah timezone host berdasarkan IP/lokasi.
+# VPS yang sudah UTC tetap UTC; VPS yang sudah Asia/Jakarta tetap Asia/Jakarta.
+# Jangan bind-mount /etc/timezone atau /etc/localtime ke container.
+export TZ="${TZ:-$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)}"
+# ===== END TIMEZONE NEUTRAL =====
 #Install Marzban
 # Gunakan script resmi hanya untuk menyiapkan Docker/CLI.
 # Output ditulis ke log agar traceback sementara tidak memenuhi terminal.
@@ -502,99 +513,43 @@ wget -O /var/lib/marzban/xray_config.json "$sfile/xray_config.json"
 
 stage06() {
     set -e
-
-    # =========================================================
-    # FILE REPOSITORY — HANYA FILE YANG ADA DI REPOSITORY
-    # =========================================================
-    # Sengaja TIDAK memasang file add* seperti:
-    # addvmess, addvless, addtrojan, addshadow,
-    # addvmws/addvlws/addtrws/addssws, add*grpc, add*hu,
-    # dan addtrial.
-    #
-    # Hanya file pendukung yang memang ada di repository
-    # dan digunakan oleh menu/installer yang dipasang.
-    # =========================================================
-    cd /usr/bin
-
-    install_repo_script() {
-        local name="$1"
-        local target="${2:-/usr/bin/$1}"
-
-        wget -qO "$target" "$sfile/$name" || {
-            echo "ERROR: gagal download $name dari repository."
-            return 1
-        }
-
-        [ -s "$target" ] || {
-            echo "ERROR: file $name kosong."
-            return 1
-        }
-
-        chmod 755 "$target"
-
-        # Validasi Bash hanya untuk script.
-        case "$name" in
-            *.sh|menu|menu-akun|menu-backup|menu-reboot|backup|buat_token|cekerror|ceklog|ceklogin|ceknginx|cekservice|expired|ganticore|hapus|ram|rebuild|renew|resetusage|routing|seeroute|setlimit|status|autokill|ganti_domain)
-                bash -n "$target" >/dev/null 2>&1 || {
-                    echo "ERROR: syntax $name tidak valid."
-                    return 1
-                }
-                ;;
-        esac
-    }
-
-    # Menu
-    install_repo_script menu /usr/bin/menu
-    install_repo_script menu-akun /usr/bin/menu-akun
-    install_repo_script menu-backup /usr/bin/menu-backup
-    install_repo_script menu-reboot /usr/bin/menu-reboot
-
-    # User / account management
-    install_repo_script ceklogin /usr/bin/ceklogin
-    install_repo_script hapus /usr/bin/hapus
-    install_repo_script renew /usr/bin/renew
-    install_repo_script resetusage /usr/bin/resetusage
-    install_repo_script expired /usr/bin/expired
-    install_repo_script setlimit /usr/bin/setlimit
-    install_repo_script status /usr/bin/status
-
-    # Server tools
-    install_repo_script buat_token /usr/bin/buat_token
-    install_repo_script cekservice /usr/bin/cekservice
-    install_repo_script ram /usr/bin/ram
-    install_repo_script ceklog /usr/bin/ceklog
-    install_repo_script cekerror /usr/bin/cekerror
-    install_repo_script ceknginx /usr/bin/ceknginx
-    install_repo_script clearlog /usr/bin/clearlog
-    install_repo_script autokill /usr/bin/autokill
-
-    # Network / routing / domain
-    install_repo_script ganticore /usr/bin/ganticore
-    install_repo_script routing /usr/bin/routing
-    install_repo_script seeroute /usr/bin/seeroute
-    install_repo_script ganti_domain /usr/bin/ganti_domain
-
-    # Backup / reboot / rebuild
-    install_repo_script backup /usr/bin/backup
-    install_repo_script reboot_otomatis.sh /usr/bin/reboot_otomatis.sh
-    install_repo_script rebuild /usr/local/bin/rebuild
-
-    # SSL helper
-    install_repo_script fix-ssl.sh /usr/bin/fix-ssl.sh
-
-    # Cron
-    cat > /etc/cron.d/clearlog_otomatis <<'EOF'
+#install command
+cd /usr/bin
+#Additional
+wget -O status "$sfile/status" && chmod +x status
+wget -qO /usr/bin/menu "$sfile/menu" && chmod 755 /usr/bin/menu
+test -s /usr/bin/menu || { echo "ERROR: file menu kosong/gagal di-download."; exit 1; }
+test -s /usr/bin/menu || { echo "ERROR: file menu kosong/gagal di-download."; exit 1; }
+bash -n /usr/bin/menu || { echo "ERROR: file menu dari repository tidak valid."; exit 1; }
+# Download ganti_domain sebagai file terpisah dari repository.
+wget -qO /usr/bin/ganti_domain "$sfile/ganti_domain" && chmod 755 /usr/bin/ganti_domain
+test -s /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain kosong/gagal di-download."; exit 1; }
+test -s /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain kosong/gagal di-download."; exit 1; }
+bash -n /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain dari repository tidak valid."; exit 1; }
+wget -O ceklogin "$sfile/ceklogin" && chmod +x ceklogin
+wget -O hapus "$sfile/hapus" && chmod +x hapus
+wget -O renew "$sfile/renew" && chmod +x renew
+wget -O resetusage "$sfile/resetusage" && chmod +x resetusage
+wget -O buat_token "$sfile/buat_token" && chmod +x buat_token
+wget -O cekservice "$sfile/cekservice" && chmod +x cekservice
+wget -O ram "$sfile/ram" && chmod +x ram
+wget -O menu-backup "$sfile/menu-backup" && chmod +x menu-backup
+wget -O menu-reboot "$sfile/menu-reboot" && chmod +x menu-reboot
+wget -O menu-akun "$sfile/menu-akun" && chmod +x menu-akun
+wget -O backup "$sfile/backup" && chmod +x backup
+wget -O clearlog "$sfile/clearlog" && chmod +x clearlog
+# Jalankan clearlog otomatis setiap hari pukul 02:00 WIB.
+cat > /etc/cron.d/clearlog_otomatis <<'EOF'
 00 2 * * * root /usr/bin/clearlog >/dev/null 2>&1
 EOF
-    chmod 644 /etc/cron.d/clearlog_otomatis
-
-    cat > /etc/cron.d/expired_otomatis <<'EOF'
-00 1 * * * root /usr/bin/expired >/dev/null 2>&1
-EOF
-    chmod 644 /etc/cron.d/expired_otomatis
-
-    systemctl restart cron 2>/dev/null || true
-    cd /root
+chmod 644 /etc/cron.d/clearlog_otomatis
+systemctl restart cron 2>/dev/null || true
+wget -O ceklog "$sfile/ceklog" && chmod +x ceklog
+wget -O cekerror "$sfile/cekerror" && chmod +x cekerror
+wget -O ceknginx "$sfile/ceknginx" && chmod +x ceknginx
+wget -O expired "$sfile/expired" && chmod +x expired
+wget -O setlimit "$sfile/setlimit" && chmod +x setlimit
+wget -O autokill "$sfile/autokill" && chmod +x autokill
 
 # =========================================================
 # Install BWBOT - bandwidth monitor Telegram
@@ -844,64 +799,231 @@ systemctl restart cron;
 
 
 # =========================================================
-# BOT USAGE - SOURCE FROM GITHUB
-# Source resmi: faiqzuhry/faiqzuhry/main/usage.py
+# BOT USAGE - FINAL
+# Menggunakan BOT_TOKEN + CHAT_ID yang SAMA dengan BWBOT/menu-backup.
+# Menggunakan virtual environment terisolasi untuk python-telegram-bot.
 # =========================================================
-log "Memasang BOT Usage dari GitHub..."
+log "Memasang BOT Usage FINAL..."
 
-apt-get install -y python3 python3-venv curl >/dev/null 2>&1
+apt-get install -y python3 >/dev/null 2>&1
 
-USAGE_URL="https://raw.githubusercontent.com/faiqzuhry/faiqzuhry/main/usage.py"
-USAGE_TMP="/tmp/usage.py.$$"
+# ==================== BOT USAGE - FINAL ====================
+install_bot_usage() {
+    log "Memasang BOT Usage..."
 
-if ! curl -4fsSL --retry 3 --connect-timeout 15 "$USAGE_URL" -o "$USAGE_TMP"; then
-    rm -f "$USAGE_TMP"
-    colorized_echo red "[x] Gagal mengambil usage.py dari GitHub."
-    return 1
-fi
+    local usage_url="https://raw.githubusercontent.com/faiqzuhry/Faiq-zuhry/main/usage.py"
+    local venv="/opt/bot-usage-venv"
+    local legacy_venv="/opt/bot-usage-env"
+    local usage_file="/usr/local/bin/usage.py"
+    local config_file="/etc/data/telegram_config.conf"
 
-if [ ! -s "$USAGE_TMP" ] || ! grep -q 'def cek_usage_command' "$USAGE_TMP"; then
-    rm -f "$USAGE_TMP"
-    colorized_echo red "[x] usage.py dari GitHub tidak valid / bukan BOT Check Usage."
-    return 1
-fi
+    # BOT Usage source
+    curl -4fsSL "$usage_url" -o "$usage_file" || {
+        err "Gagal download usage.py dari GitHub."
+        return 1
+    }
 
-install -m 755 "$USAGE_TMP" /usr/local/bin/usage.py
-rm -f "$USAGE_TMP"
+    chmod 755 "$usage_file"
 
-# Isolasi dependency agar Python sistem tidak terganggu.
-BOT_USAGE_VENV="/opt/bot-usage-venv"
-if [ ! -x "$BOT_USAGE_VENV/bin/python" ]; then
-    python3 -m venv "$BOT_USAGE_VENV"
-fi
+    # uv dipakai agar Python 3.12 tersedia tanpa mengubah Python sistem.
+    if ! command -v uv >/dev/null 2>&1; then
+        log "Memasang uv untuk menyediakan Python 3.12..."
+        curl -4LsSf https://astral.sh/uv/install.sh | sh || {
+            err "Gagal memasang uv."
+            return 1
+        }
+    fi
 
-"$BOT_USAGE_VENV/bin/python" -m pip install --upgrade pip >/dev/null 2>&1 || true
-if ! "$BOT_USAGE_VENV/bin/python" -m pip install 'python-telegram-bot==13.15' >/dev/null 2>&1; then
-    colorized_echo red "[x] Gagal memasang python-telegram-bot 13.15 untuk usage.py."
-    return 1
-fi
+    export PATH="/root/.local/bin:/usr/local/bin:$PATH"
 
-# usage.py membaca bot_usage.json relatif terhadap WorkingDirectory.
-if [ ! -f /etc/data/telegram_config.conf ]; then
-    colorized_echo red "[x] /etc/data/telegram_config.conf tidak ditemukan."
-    return 1
-fi
+    log "Menyiapkan Python 3.12 untuk BOT Usage..."
+    uv python install 3.12 || {
+        err "Gagal menyediakan Python 3.12."
+        return 1
+    }
 
-BOT_TOKEN="$(awk -F= '$1=="BOT_TOKEN" || $1=="API_TOKEN" || $1=="TELEGRAM_BOT_TOKEN" {print $2; exit}' /etc/data/telegram_config.conf | tr -d '\r' | sed 's/^['\"]//;s/['\"]$//')"
-CHAT_ID="$(awk -F= '$1=="CHAT_ID" || $1=="TELEGRAM_CHAT_ID" || $1=="chatId" {print $2; exit}' /etc/data/telegram_config.conf | tr -d '\r' | sed 's/^['\"]//;s/['\"]$//')"
+    rm -rf "$venv"
+    uv venv --python 3.12 --seed "$venv" || {
+        err "Gagal membuat virtual environment BOT Usage."
+        return 1
+    }
 
-if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
-    colorized_echo red "[x] BOT_TOKEN/CHAT_ID tidak ditemukan di telegram_config.conf."
-    return 1
-fi
+    # Kompatibilitas dengan installer/service lama yang masih memanggil
+    # /opt/bot-usage-env/bin/python. Symlink dibuat SETELAH venv benar-benar ada,
+    # sehingga tidak pernah menghasilkan "No such file or directory".
+    if [ -L "$legacy_venv" ] || [ -e "$legacy_venv" ]; then
+        rm -rf "$legacy_venv"
+    fi
+    ln -s "$venv" "$legacy_venv"
 
-cat > /usr/local/bin/bot_usage.json <<EOF
+    if [ ! -x "$venv/bin/python" ]; then
+        err "Interpreter BOT Usage tidak ditemukan: $venv/bin/python"
+        return 1
+    fi
+
+    # Telegram membatasi pesan teks sekitar 4096 karakter.
+    # Patch usage.py dilakukan setelah venv tersedia, sehingga installer
+    # tidak pernah memanggil /opt/bot-usage-venv/bin/python terlalu awal.
+    "$venv/bin/python" - "$usage_file" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+
+old = "    update.message.reply_text(usage_text, parse_mode='Markdown')"
+new = """    def send_long_message(message, text, parse_mode='Markdown'):
+        max_length = 4000
+
+        if len(text) <= max_length:
+            message.reply_text(text, parse_mode=parse_mode)
+            return
+
+        lines = text.splitlines()
+        chunk = ""
+
+        for line in lines:
+            if len(line) > max_length:
+                if chunk:
+                    message.reply_text(chunk, parse_mode=parse_mode)
+                    chunk = ""
+
+                for i in range(0, len(line), max_length):
+                    message.reply_text(
+                        line[i:i + max_length],
+                        parse_mode=parse_mode
+                    )
+                continue
+
+            candidate = line if not chunk else chunk + "\\n" + line
+
+            if len(candidate) > max_length:
+                if chunk:
+                    message.reply_text(chunk, parse_mode=parse_mode)
+                chunk = line
+            else:
+                chunk = candidate
+
+        if chunk:
+            message.reply_text(chunk, parse_mode=parse_mode)
+
+    send_long_message(update.message, usage_text)"""
+
+if old in source:
+    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+else:
+    print("INFO: Target reply_text lama tidak ditemukan; usage.py dipertahankan.")
+PY
+
+    # PTB 13.15 membutuhkan dependency lama tertentu.
+    "$venv/bin/python" -m pip install --no-cache-dir \
+        "pip<25" \
+        "setuptools<81" \
+        wheel \
+        "six==1.16.0" \
+        "urllib3==1.26.20" \
+        "certifi>=2021.5.30" \
+        "cachetools==4.2.2" \
+        "APScheduler==3.6.3" \
+        "pytz>=2018.6" \
+        "tornado==6.1" || {
+        err "Gagal memasang dependency BOT Usage."
+        return 1
+    }
+
+    "$venv/bin/python" -m pip install --no-cache-dir \
+        "python-telegram-bot==13.15" --no-deps || {
+        err "Gagal memasang python-telegram-bot 13.15."
+        return 1
+    }
+
+    # PTB 13.15 membawa vendored urllib3 yang bermasalah pada environment ini.
+    rm -rf "$venv/lib/python3.12/site-packages/telegram/vendor/ptb_urllib3/urllib3"
+
+    # Config BOT_TOKEN tetap bersumber dari /etc/data/telegram_config.conf.
+    if [ ! -f "$config_file" ]; then
+        err "$config_file tidak ditemukan. Jalankan telegram_final_setup terlebih dahulu."
+        return 1
+    fi
+
+    local bot_token chat_id
+    bot_token="$(grep -m1 '^BOT_TOKEN=' "$config_file" | cut -d= -f2-)"
+    chat_id="$(grep -m1 '^CHAT_ID=' "$config_file" | cut -d= -f2-)"
+
+    if [ -z "$bot_token" ] || [ -z "$chat_id" ]; then
+        err "BOT_TOKEN/CHAT_ID tidak ditemukan di $config_file."
+        return 1
+    fi
+
+    # usage.py lama membaca bot_usage.json secara relatif terhadap WorkingDirectory.
+    cat > /usr/local/bin/bot_usage.json <<EOF
 {
-  "API_TOKEN": "$BOT_TOKEN",
-  "CHAT_ID": "$CHAT_ID"
+  "API_TOKEN": "$bot_token",
+  "CHAT_ID": "$chat_id"
 }
 EOF
-chmod 600 /usr/local/bin/bot_usage.json
+    chmod 600 /usr/local/bin/bot_usage.json
+
+    # Validasi dependency dan syntax sebelum service dijalankan.
+    "$venv/bin/python" - <<'PY' || return 1
+import telegram
+import cachetools
+import apscheduler
+import tornado
+import urllib3
+print("telegram =", telegram.__version__)
+print("cachetools =", cachetools.__version__)
+print("APScheduler =", apscheduler.__version__)
+print("tornado =", tornado.version)
+print("urllib3 =", urllib3.__version__)
+PY
+
+    "$venv/bin/python" -m py_compile "$usage_file" || {
+        err "usage.py gagal py_compile."
+        return 1
+    }
+
+    # Verifikasi juga path legacy yang muncul pada installer lama.
+    "$legacy_venv/bin/python" --version >/dev/null 2>&1 || {
+        err "Compatibility interpreter BOT Usage gagal: $legacy_venv/bin/python"
+        return 1
+    }
+
+    systemctl disable --now bot-usage.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/bot-usage.service
+
+    cat > /etc/systemd/system/check-usage.service <<'EOF'
+[Unit]
+Description=Telegram Check Usage Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/bin
+ExecStart=/opt/bot-usage-venv/bin/python /usr/local/bin/usage.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable check-usage.service >/dev/null 2>&1
+    systemctl restart check-usage.service
+    sleep 3
+
+    if systemctl is-active --quiet check-usage.service; then
+        log "[✓] BOT Check Usage aktif."
+    else
+        err "BOT Check Usage gagal aktif."
+        systemctl status check-usage.service --no-pager || true
+        journalctl -u check-usage.service -n 30 --no-pager || true
+        return 1
+    fi
+}
 
 stage07() {
     set -e
@@ -968,6 +1090,12 @@ stage09() {
     set -e
 cd /opt/marzban
 
+# ===== TIMEZONE NEUTRAL =====
+# Jangan mengubah timezone host/container. Hapus bind-mount timezone
+# dari compose agar Docker mengikuti environment tanpa memaksa zona waktu.
+sed -i -e '\\#/etc/timezone#d' -e '\\#/etc/localtime#d' /opt/marzban/docker-compose.yml 2>/dev/null || true
+# ===== END TIMEZONE NEUTRAL =====
+
 # ---------------------------------------------------------
 # Marzban database safety + migration
 # Mencegah error: sqlite3.OperationalError: no such column: admins.users_usage
@@ -984,29 +1112,11 @@ sed -i \
     -e '\#/etc/localtime#d' \
     /opt/marzban/docker-compose.yml
 
-# =========================================================
-# MARZBAN IMAGE FIX
-# Repository docker-compose memakai Docker Hub lama:
-#   gozargah/marzban:latest
-# Gunakan registry resmi GitHub Container Registry (GHCR).
-# =========================================================
-MARZBAN_IMAGE="ghcr.io/gozargah/marzban:latest"
-
-# Paksa service marzban memakai image resmi GHCR.
-# Tidak mengubah image nginx.
-if grep -qE '^[[:space:]]+marzban:[[:space:]]*$' /opt/marzban/docker-compose.yml; then
-    sed -i -E '/^[[:space:]]+marzban:[[:space:]]*$/,/^[[:space:]]+[A-Za-z0-9_.-]+:[[:space:]]*$/ {
-        /^[[:space:]]+image:[[:space:]]*/ s#^[[:space:]]*image:[[:space:]]*.*#    image: ghcr.io/gozargah/marzban:latest#
-    }' /opt/marzban/docker-compose.yml
+# Pastikan image panel dan migration berasal dari upstream Marzban yang sama.
+# Ini mencegah compose custom lama menjalankan kode baru dengan schema lama.
+if grep -qE 'image:[[:space:]]*gozargah/marzban:' /opt/marzban/docker-compose.yml; then
+    sed -i -E 's#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\1latest#' /opt/marzban/docker-compose.yml
 fi
-
-# Pastikan service marzban benar-benar mempunyai image GHCR.
-if ! grep -qE '^[[:space:]]+image:[[:space:]]*ghcr\.io/gozargah/marzban:latest[[:space:]]*$' /opt/marzban/docker-compose.yml; then
-    colorized_echo red "Image Marzban GHCR tidak berhasil diterapkan ke docker-compose.yml."
-    return 1
-fi
-
-colorized_echo cyan "Image Marzban: ${MARZBAN_IMAGE}"
 
 # Migration tanpa membuat backup database otomatis sebelum migration.
 DB_BACKUP=""
@@ -1025,26 +1135,11 @@ else
     return 1
 fi
 
-# Download image resmi GHCR sebelum migration.
-# Pull langsung juga memastikan masalah registry terlihat jelas di log.
-if ! docker pull "${MARZBAN_IMAGE}" >> /var/log/marzban-bootstrap.log 2>&1; then
-    colorized_echo red "Gagal mengambil image Marzban dari GHCR."
-    colorized_echo yellow "Image: ${MARZBAN_IMAGE}"
-    colorized_echo yellow "Log: /var/log/marzban-bootstrap.log"
-    return 1
-fi
-
-# Sinkronkan image Compose setelah pull berhasil.
+# Download image terbaru sebelum migration.
 $COMPOSE_CMD pull marzban >> /var/log/marzban-bootstrap.log 2>&1 || {
-    colorized_echo red "Docker Compose gagal menyiapkan image Marzban."
+    colorized_echo red "Gagal mengambil image Marzban."
     return 1
 }
-
-# Verifikasi image benar-benar tersedia secara lokal.
-if ! docker image inspect "${MARZBAN_IMAGE}" >/dev/null 2>&1; then
-    colorized_echo red "Image Marzban tidak tersedia setelah pull."
-    return 1
-fi
 
 # Jalankan Alembic SEBELUM panel dijalankan.
 # Dengan demikian query admin baru tidak dieksekusi pada schema lama.
@@ -1127,13 +1222,49 @@ marzban cli admin delete -u admin -y || log "WARN: cleanup admin dilewati (exit=
 
 
 
+# =========================================================
+# REBUILD VPS
+# Dipasang sebagai /usr/local/bin/rebuild
+# =========================================================
+install_rebuild() {
+    local target="/usr/local/bin/rebuild"
+    local tmp="${target}.tmp"
+    local url="${sfile}/rebuild"
+
+    colorized_echo cyan "[*] Memasang Rebuild VPS..."
+
+    if ! command -v curl >/dev/null 2>&1; then
+        apt-get update -y >/dev/null 2>&1 || true
+        apt-get install -y curl >/dev/null 2>&1 || {
+            colorized_echo yellow "[!] curl tidak tersedia. Rebuild dilewati."
+            return 0
+        }
+    fi
+
+    if curl -4fsSL --retry 3 --connect-timeout 15 --max-time 120 \
+        "$url" -o "$tmp"; then
+        if [ -s "$tmp" ] && bash -n "$tmp" >/dev/null 2>&1; then
+            chmod 755 "$tmp"
+            mv -f "$tmp" "$target"
+            colorized_echo green "[✓] Rebuild VPS terpasang: $target"
+        else
+            rm -f "$tmp"
+            colorized_echo yellow "[!] File Rebuild tidak valid. Instalasi dilanjutkan."
+        fi
+    else
+        rm -f "$tmp"
+        colorized_echo yellow "[!] Gagal mengambil Rebuild. Instalasi dilanjutkan."
+    fi
+}
+
+install_rebuild
 
 run_stage 01 "Validasi OS + input konfigurasi" stage01
 run_stage 02 "Persiapan VPS + paket" stage02
 run_stage 03 "Bootstrap Marzban + Xray" stage03
 run_stage 04 "Profile + VNStat + Speedtest + Gotop" stage04
 run_stage 05 "Nginx + SSL + konfigurasi Xray" stage05
-run_stage 06 "Menu + Tools Repository + BWBOT + cron" stage06
+run_stage 06 "Command LingVPN + Ganti Domain + BWBOT + cron" stage06
 run_stage 07 "Firewall + Fail2ban" stage07
 run_stage 08 "Database + WARP" stage08
 run_stage 09 "Migration database + Admin Marzban" stage09
@@ -1222,66 +1353,57 @@ telegram_final_setup() {
 }
 
 telegram_final_setup
-
-install_check_usage_bot() {
-    local target="/usr/local/bin/usage.py"
-    local service="/etc/systemd/system/check-usage.service"
-
-    if [ ! -f "$target" ]; then
-        colorized_echo yellow "[!] $target tidak ditemukan. BOT Check Usage dilewati."
-        return 0
-    fi
-
-    chmod 755 "$target"
-
-    # Pastikan tidak ada service lama yang menjalankan instance kedua.
-    systemctl disable --now bot-usage.service >/dev/null 2>&1 || true
-    rm -f /etc/systemd/system/bot-usage.service
-    rm -f /usr/local/bin/bot-usage-env
-
-    cat > "$service" <<'CHECK_USAGE_SERVICE_EOF'
-[Unit]
-Description=Telegram Check Usage Bot
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/usr/local/bin
-ExecStart=/opt/bot-usage-venv/bin/python /usr/local/bin/usage.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-CHECK_USAGE_SERVICE_EOF
-
-    chmod 644 "$service"
-    systemctl daemon-reload
-    systemctl reset-failed check-usage.service >/dev/null 2>&1 || true
-    systemctl enable check-usage.service >/dev/null 2>&1 || true
-    systemctl restart check-usage.service
-    sleep 2
-
-    if systemctl is-active --quiet check-usage.service; then
-        colorized_echo green "[✓] BOT Check Usage aktif."
-    else
-        colorized_echo yellow "[!] BOT Check Usage gagal aktif."
-        echo "    Cek: journalctl -u check-usage.service -n 50 --no-pager"
-    fi
-}
-
-
-# Aktifkan BOT Check Usage sebelum installer menawarkan reboot.
-install_check_usage_bot
+install_bot_usage
 
 colorized_echo green "╔════════════════════════════════════════════════════╗"
 colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
 colorized_echo green "╚════════════════════════════════════════════════════╝"
 log "INSTALLATION COMPLETE"
 echo
-echo "Telegram Check Usage: /cek_usage"
+read -rp "Reboot sekarang? [y/N]: " answer
+if [[ "$answer" =~ ^[Yy]$ ]]; then reboot; fi
+
+# =========================================================
+# FAIQVPN CHECK_USAGE BOT
+# Telegram token/chat ID memakai /etc/data/telegram_config.conf.
+# Tidak memasang telegram-vps-menu.py / remote menu.
+# =========================================================
+
+# Aktifkan BOT Check Usage sebelum installer menawarkan reboot.
+
+colorized_echo green "╔════════════════════════════════════════════════════╗"
+colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
+colorized_echo green "╚════════════════════════════════════════════════════╝"
+log "INSTALLATION COMPLETE"
+echo
+echo "Telegram Check Usage: /cek_usage atau /cek_usage username"
+echo "Service: check-usage.service"
+echo
+read -rp "Reboot sekarang? [y/N]: " answer
+if [[ "$answer" =~ ^[Yy]$ ]]; then reboot; fi
+
+colorized_echo green "╔════════════════════════════════════════════════════╗"
+colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
+colorized_echo green "╚════════════════════════════════════════════════════╝"
+log "INSTALLATION COMPLETE"
+echo
+read -rp "Reboot sekarang? [y/N]: " answer
+if [[ "$answer" =~ ^[Yy]$ ]]; then reboot; fi
+
+# =========================================================
+# FAIQVPN CHECK_USAGE BOT
+# Telegram token/chat ID memakai /etc/data/telegram_config.conf.
+# Tidak memasang telegram-vps-menu.py / remote menu.
+# =========================================================
+
+# Aktifkan BOT Check Usage sebelum installer menawarkan reboot.
+
+colorized_echo green "╔════════════════════════════════════════════════════╗"
+colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
+colorized_echo green "╚════════════════════════════════════════════════════╝"
+log "INSTALLATION COMPLETE"
+echo
+echo "Telegram Check Usage: /cek_usage atau /cek_usage username"
 echo "Service: check-usage.service"
 echo
 read -rp "Reboot sekarang? [y/N]: " answer
