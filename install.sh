@@ -197,23 +197,6 @@ setup_swap_2gb
 
 # ===== END AUTO SWAP 2GB =====
 
-# =========================================================
-# TIMEZONE POLICY
-# Installer TIDAK mengubah timezone host.
-# UTC/AWS, Asia/Jakarta, atau timezone lain dipertahankan.
-# Docker/Marzban mengikuti waktu host.
-# =========================================================
-ensure_timezone_neutral() {
-    local tz
-    tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
-    if [ -n "$tz" ]; then
-        colorized_echo green "[✓] Timezone host dipertahankan: $tz"
-    else
-        colorized_echo yellow "[!] Timezone host tidak dapat dibaca; tidak diubah."
-    fi
-}
-ensure_timezone_neutral
-
 stage01(){
     local supported_os=false
     if [ -f /etc/os-release ]; then
@@ -364,19 +347,7 @@ wget -O /opt/marzban/index.html "https://cdn.jsdelivr.net/gh/MuhammadAshouri/mar
 wget -O /opt/marzban/.env "$sfile/env"
 
 #install compose
-COMPOSE_TMP="/opt/marzban/docker-compose.yml.download"
-rm -f "$COMPOSE_TMP"
-if ! wget -qO "$COMPOSE_TMP" "$sfile/docker-compose.yml"; then
-    rm -f "$COMPOSE_TMP"
-    colorized_echo red "Gagal mengunduh docker-compose.yml dari repository."
-    return 1
-fi
-if [ ! -s "$COMPOSE_TMP" ]; then
-    rm -f "$COMPOSE_TMP"
-    colorized_echo red "docker-compose.yml hasil download kosong."
-    return 1
-fi
-mv -f "$COMPOSE_TMP" /opt/marzban/docker-compose.yml
+wget -O /opt/marzban/docker-compose.yml "$sfile/docker-compose.yml"
 
 # Hapus seluruh bind-mount timezone dari Compose.
 # Timezone host/container tidak dikonfigurasi oleh installer.
@@ -385,19 +356,6 @@ sed -i \
     -e '\#/etc/timezone#d' \
     -e '\#/etc/localtime#d' \
     /opt/marzban/docker-compose.yml
-
-# Pastikan Compose valid sebelum tahap berikutnya.
-if docker compose version >/dev/null 2>&1; then
-    if ! docker compose -f /opt/marzban/docker-compose.yml config >/dev/null 2>&1; then
-        colorized_echo red "docker-compose.yml tidak valid setelah normalisasi."
-        return 1
-    fi
-elif command -v docker-compose >/dev/null 2>&1; then
-    if ! docker-compose -f /opt/marzban/docker-compose.yml config >/dev/null 2>&1; then
-        colorized_echo red "docker-compose.yml tidak valid setelah normalisasi."
-        return 1
-    fi
-fi
 
 #install assets & core
 mkdir -p /etc/autokill/logs
@@ -544,43 +502,99 @@ wget -O /var/lib/marzban/xray_config.json "$sfile/xray_config.json"
 
 stage06() {
     set -e
-#install command
-cd /usr/bin
-#Additional
-wget -O status "$sfile/status" && chmod +x status
-wget -qO /usr/bin/menu "$sfile/menu" && chmod 755 /usr/bin/menu
-test -s /usr/bin/menu || { echo "ERROR: file menu kosong/gagal di-download."; exit 1; }
-test -s /usr/bin/menu || { echo "ERROR: file menu kosong/gagal di-download."; exit 1; }
-bash -n /usr/bin/menu || { echo "ERROR: file menu dari repository tidak valid."; exit 1; }
-# Download ganti_domain sebagai file terpisah dari repository.
-wget -qO /usr/bin/ganti_domain "$sfile/ganti_domain" && chmod 755 /usr/bin/ganti_domain
-test -s /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain kosong/gagal di-download."; exit 1; }
-test -s /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain kosong/gagal di-download."; exit 1; }
-bash -n /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain dari repository tidak valid."; exit 1; }
-wget -O ceklogin "$sfile/ceklogin" && chmod +x ceklogin
-wget -O hapus "$sfile/hapus" && chmod +x hapus
-wget -O renew "$sfile/renew" && chmod +x renew
-wget -O resetusage "$sfile/resetusage" && chmod +x resetusage
-wget -O buat_token "$sfile/buat_token" && chmod +x buat_token
-wget -O cekservice "$sfile/cekservice" && chmod +x cekservice
-wget -O ram "$sfile/ram" && chmod +x ram
-wget -O menu-backup "$sfile/menu-backup" && chmod +x menu-backup
-wget -O menu-reboot "$sfile/menu-reboot" && chmod +x menu-reboot
-wget -O menu-akun "$sfile/menu-akun" && chmod +x menu-akun
-wget -O backup "$sfile/backup" && chmod +x backup
-wget -O clearlog "$sfile/clearlog" && chmod +x clearlog
-# Jalankan clearlog otomatis setiap hari pukul 02:00 WIB.
-cat > /etc/cron.d/clearlog_otomatis <<'EOF'
+
+    # =========================================================
+    # FILE REPOSITORY — HANYA FILE YANG ADA DI REPOSITORY
+    # =========================================================
+    # Sengaja TIDAK memasang file add* seperti:
+    # addvmess, addvless, addtrojan, addshadow,
+    # addvmws/addvlws/addtrws/addssws, add*grpc, add*hu,
+    # dan addtrial.
+    #
+    # Hanya file pendukung yang memang ada di repository
+    # dan digunakan oleh menu/installer yang dipasang.
+    # =========================================================
+    cd /usr/bin
+
+    install_repo_script() {
+        local name="$1"
+        local target="${2:-/usr/bin/$1}"
+
+        wget -qO "$target" "$sfile/$name" || {
+            echo "ERROR: gagal download $name dari repository."
+            return 1
+        }
+
+        [ -s "$target" ] || {
+            echo "ERROR: file $name kosong."
+            return 1
+        }
+
+        chmod 755 "$target"
+
+        # Validasi Bash hanya untuk script.
+        case "$name" in
+            *.sh|menu|menu-akun|menu-backup|menu-reboot|backup|buat_token|cekerror|ceklog|ceklogin|ceknginx|cekservice|expired|ganticore|hapus|ram|rebuild|renew|resetusage|routing|seeroute|setlimit|status|autokill|ganti_domain)
+                bash -n "$target" >/dev/null 2>&1 || {
+                    echo "ERROR: syntax $name tidak valid."
+                    return 1
+                }
+                ;;
+        esac
+    }
+
+    # Menu
+    install_repo_script menu /usr/bin/menu
+    install_repo_script menu-akun /usr/bin/menu-akun
+    install_repo_script menu-backup /usr/bin/menu-backup
+    install_repo_script menu-reboot /usr/bin/menu-reboot
+
+    # User / account management
+    install_repo_script ceklogin /usr/bin/ceklogin
+    install_repo_script hapus /usr/bin/hapus
+    install_repo_script renew /usr/bin/renew
+    install_repo_script resetusage /usr/bin/resetusage
+    install_repo_script expired /usr/bin/expired
+    install_repo_script setlimit /usr/bin/setlimit
+    install_repo_script status /usr/bin/status
+
+    # Server tools
+    install_repo_script buat_token /usr/bin/buat_token
+    install_repo_script cekservice /usr/bin/cekservice
+    install_repo_script ram /usr/bin/ram
+    install_repo_script ceklog /usr/bin/ceklog
+    install_repo_script cekerror /usr/bin/cekerror
+    install_repo_script ceknginx /usr/bin/ceknginx
+    install_repo_script clearlog /usr/bin/clearlog
+    install_repo_script autokill /usr/bin/autokill
+
+    # Network / routing / domain
+    install_repo_script ganticore /usr/bin/ganticore
+    install_repo_script routing /usr/bin/routing
+    install_repo_script seeroute /usr/bin/seeroute
+    install_repo_script ganti_domain /usr/bin/ganti_domain
+
+    # Backup / reboot / rebuild
+    install_repo_script backup /usr/bin/backup
+    install_repo_script reboot_otomatis.sh /usr/bin/reboot_otomatis.sh
+    install_repo_script rebuild /usr/local/bin/rebuild
+
+    # SSL helper
+    install_repo_script fix-ssl.sh /usr/bin/fix-ssl.sh
+
+    # Cron
+    cat > /etc/cron.d/clearlog_otomatis <<'EOF'
 00 2 * * * root /usr/bin/clearlog >/dev/null 2>&1
 EOF
-chmod 644 /etc/cron.d/clearlog_otomatis
-systemctl restart cron 2>/dev/null || true
-wget -O ceklog "$sfile/ceklog" && chmod +x ceklog
-wget -O cekerror "$sfile/cekerror" && chmod +x cekerror
-wget -O ceknginx "$sfile/ceknginx" && chmod +x ceknginx
-wget -O expired "$sfile/expired" && chmod +x expired
-wget -O setlimit "$sfile/setlimit" && chmod +x setlimit
-wget -O autokill "$sfile/autokill" && chmod +x autokill
+    chmod 644 /etc/cron.d/clearlog_otomatis
+
+    cat > /etc/cron.d/expired_otomatis <<'EOF'
+00 1 * * * root /usr/bin/expired >/dev/null 2>&1
+EOF
+    chmod 644 /etc/cron.d/expired_otomatis
+
+    systemctl restart cron 2>/dev/null || true
+    cd /root
 
 # =========================================================
 # Install BWBOT - bandwidth monitor Telegram
@@ -830,529 +844,64 @@ systemctl restart cron;
 
 
 # =========================================================
-# BOT USAGE - FINAL
-# Menggunakan BOT_TOKEN + CHAT_ID yang SAMA dengan BWBOT/menu-backup.
-# Tidak memakai python-telegram-bot/pip.
+# BOT USAGE - SOURCE FROM GITHUB
+# Source resmi: faiqzuhry/faiqzuhry/main/usage.py
 # =========================================================
-log "Memasang BOT Usage FINAL..."
-
-apt-get install -y python3 >/dev/null 2>&1
-
-cat > /usr/local/bin/usage.py <<'BOT_USAGE_PY_EOF'
-#!/usr/bin/env python3
-import fcntl
-import json
-import logging
-import os
-import re
-import sqlite3
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-from datetime import datetime
-
-CONFIG_FILE = "/etc/data/telegram_config.conf"
-DB_PATH = "/var/lib/marzban/db.sqlite3"
-LOCK_FILE = "/run/bot-usage.lock"
-API_TIMEOUT = 45
-POLL_TIMEOUT = 30
-MAX_MESSAGE = 3900
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-log = logging.getLogger("bot-usage")
-
-
-def clean_value(value):
-    value = str(value or "").strip().strip("'\"")
-
-    for _ in range(3):
-        old = value
-
-        value = re.sub(
-            r"^(?:botToken|BOT_TOKEN|telegram_bot_token)\s*=\s*",
-            "",
-            value,
-            flags=re.IGNORECASE,
-        )
-        value = re.sub(
-            r"^(?:chatId|CHAT_ID|telegram_chat_id)\s*=\s*",
-            "",
-            value,
-            flags=re.IGNORECASE,
-        )
-
-        value = value.strip().strip("'\"")
-
-        if value == old:
-            break
-
-    return value
-
-
-def load_config():
-    if not os.path.isfile(CONFIG_FILE):
-        raise RuntimeError(
-            f"Konfigurasi Telegram tidak ditemukan: {CONFIG_FILE}"
-        )
-
-    values = {}
-
-    with open(CONFIG_FILE, "r", encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
-            line = raw.strip()
-
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-
-            key, value = line.split("=", 1)
-            values[key.strip()] = clean_value(value)
-
-    token = clean_value(
-        values.get("BOT_TOKEN")
-        or values.get("botToken")
-        or values.get("API_TOKEN")
-        or values.get("TELEGRAM_BOT_TOKEN")
-    )
-
-    chat_id = clean_value(
-        values.get("CHAT_ID")
-        or values.get("chatId")
-        or values.get("TELEGRAM_CHAT_ID")
-    )
-
-    if not token:
-        raise RuntimeError(
-            "BOT_TOKEN tidak ditemukan di telegram_config.conf"
-        )
-
-    if not chat_id:
-        raise RuntimeError(
-            "CHAT_ID tidak ditemukan di telegram_config.conf"
-        )
-
-    if not re.fullmatch(r"-?\d+", chat_id):
-        raise RuntimeError(
-            "CHAT_ID harus berupa angka murni."
-        )
-
-    if not re.fullmatch(r"\d+:[A-Za-z0-9_-]+", token):
-        raise RuntimeError(
-            "BOT_TOKEN tidak valid."
-        )
-
-    return token, chat_id
-
-
-def api_call(token, method, payload=None):
-    url = f"https://api.telegram.org/bot{token}/{method}"
-
-    data = None
-    if payload is not None:
-        data = urllib.parse.urlencode(payload).encode("utf-8")
-
-    request = urllib.request.Request(
-        url,
-        data=data,
-        method="POST" if data is not None else "GET",
-    )
-    request.add_header(
-        "Content-Type",
-        "application/x-www-form-urlencoded",
-    )
-
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=API_TIMEOUT,
-        ) as response:
-            body = response.read().decode(
-                "utf-8",
-                errors="replace",
-            )
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode(
-            "utf-8",
-            errors="replace",
-        )
-
-        try:
-            result = json.loads(body)
-        except Exception:
-            raise RuntimeError(
-                f"Telegram HTTP {exc.code}: {body[:300]}"
-            )
-
-        raise RuntimeError(
-            result.get(
-                "description",
-                f"Telegram HTTP {exc.code}",
-            )
-        )
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"Telegram/network error: {exc}"
-        ) from exc
-
-    try:
-        result = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            "Respons Telegram bukan JSON yang valid."
-        ) from exc
-
-    if not result.get("ok"):
-        raise RuntimeError(
-            result.get(
-                "description",
-                "Telegram API error",
-            )
-        )
-
-    return result.get("result")
-
-
-def traffic(value):
-    value = int(value or 0)
-
-    if value < 1024 ** 2:
-        return f"{value / 1024:.2f} KB"
-
-    if value < 1024 ** 3:
-        return f"{value / 1024 ** 2:.2f} MB"
-
-    if value < 1024 ** 4:
-        return f"{value / 1024 ** 3:.2f} GB"
-
-    return f"{value / 1024 ** 4:.2f} TB"
-
-
-def expire(value):
-    if not value:
-        return "No Expiration"
-
-    try:
-        return datetime.fromtimestamp(
-            int(value)
-        ).strftime("%d-%m-%Y %H:%M")
-    except (
-        TypeError,
-        ValueError,
-        OSError,
-        OverflowError,
-    ):
-        return "Unknown"
-
-
-def db():
-    if not os.path.isfile(DB_PATH):
-        raise FileNotFoundError(
-            f"Database Marzban tidak ditemukan: {DB_PATH}"
-        )
-
-    return sqlite3.connect(
-        f"file:{DB_PATH}?mode=ro",
-        uri=True,
-        timeout=10,
-    )
-
-
-def get_user(username):
-    con = db()
-
-    try:
-        return con.execute(
-            """
-            SELECT username, used_traffic, status, data_limit, expire
-            FROM users
-            WHERE username = ? COLLATE NOCASE
-            LIMIT 1
-            """,
-            (username,),
-        ).fetchone()
-    finally:
-        con.close()
-
-
-def get_all_users():
-    con = db()
-
-    try:
-        return con.execute(
-            """
-            SELECT username, used_traffic, status, data_limit, expire
-            FROM users
-            ORDER BY username COLLATE NOCASE
-            """
-        ).fetchall()
-    finally:
-        con.close()
-
-
-def format_user(row):
-    username, used, status, limit, expires = row
-
-    data_limit = (
-        "Unlimited"
-        if limit is None or int(limit) == -1
-        else traffic(limit)
-    )
-
-    return (
-        "👤 User Usage\n\n"
-        f"👤 Username : {username}\n"
-        f"📊 Used Traffic : {traffic(used)}\n"
-        f"📋 Status : {status or 'unknown'}\n"
-        f"🔐 Data Limit : {data_limit}\n"
-        f"⏳ Expires At : {expire(expires)}"
-    )
-
-
-def build_all_messages():
-    rows = get_all_users()
-
-    if not rows:
-        return [
-            "🔍 User Usage List\n\nTidak ada user."
-        ]
-
-    messages = []
-    current = [
-        "🔍 User Usage List",
-        "",
-    ]
-
-    for row in rows:
-        part = format_user(row).splitlines() + [""]
-
-        if sum(
-            len(x) + 1
-            for x in current + part
-        ) > MAX_MESSAGE:
-            messages.append(
-                "\n".join(current).rstrip()
-            )
-            current = [
-                "🔍 User Usage List",
-                "",
-            ]
-
-        current.extend(part)
-
-    if len(current) > 2:
-        messages.append(
-            "\n".join(current).rstrip()
-        )
-
-    return messages
-
-
-def send_message(token, chat_id, text):
-    api_call(
-        token,
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": "true",
-        },
-    )
-
-
-def handle_message(
-    token,
-    allowed_chat_id,
-    message,
-):
-    chat = message.get("chat") or {}
-    chat_id = str(chat.get("id", ""))
-
-    if chat_id != allowed_chat_id:
-        return
-
-    text = (message.get("text") or "").strip()
-
-    if not text:
-        return
-
-    command = (
-        text.split()[0]
-        .split("@", 1)[0]
-        .lower()
-    )
-
-    if command == "/start":
-        send_message(
-            token,
-            chat_id,
-            "🤖 Marzban Bot Usage\n\n"
-            "Gunakan:\n"
-            "/cek_usage — semua user\n"
-            "/cek_usage username — usage user tertentu",
-        )
-        return
-
-    if command != "/cek_usage":
-        return
-
-    args = text.split(maxsplit=1)
-
-    try:
-        if len(args) > 1 and args[1].strip():
-            username = args[1].strip()
-            row = get_user(username)
-
-            if row is None:
-                send_message(
-                    token,
-                    chat_id,
-                    f"❌ User '{username}' tidak ditemukan.",
-                )
-                return
-
-            send_message(
-                token,
-                chat_id,
-                format_user(row),
-            )
-            return
-
-        for message_text in build_all_messages():
-            send_message(
-                token,
-                chat_id,
-                message_text,
-            )
-
-    except Exception as exc:
-        log.exception(
-            "Gagal mengambil usage"
-        )
-
-        send_message(
-            token,
-            chat_id,
-            "❌ Gagal mengambil usage: "
-            f"{type(exc).__name__}: {exc}",
-        )
-
-
-def main():
-    lock_fh = open(
-        LOCK_FILE,
-        "w",
-    )
-
-    try:
-        fcntl.flock(
-            lock_fh.fileno(),
-            fcntl.LOCK_EX | fcntl.LOCK_NB,
-        )
-    except BlockingIOError:
-        raise SystemExit(
-            "BOT Usage sudah berjalan. "
-            "Instance kedua dihentikan."
-        )
-
-    token, allowed_chat_id = load_config()
-
-    me = api_call(
-        token,
-        "getMe",
-    )
-
-    log.info(
-        "Token valid. Bot: @%s",
-        me.get(
-            "username",
-            "unknown",
-        ),
-    )
-
-    api_call(
-        token,
-        "deleteWebhook",
-        {
-            "drop_pending_updates": "false"
-        },
-    )
-
-    log.info("BOT Usage aktif.")
-    log.info("Polling Telegram dimulai.")
-
-    offset = None
-
-    while True:
-        try:
-            payload = {
-                "timeout": POLL_TIMEOUT,
-                "allowed_updates": json.dumps(
-                    ["message"]
-                ),
-            }
-
-            if offset is not None:
-                payload["offset"] = str(offset)
-
-            updates = api_call(
-                token,
-                "getUpdates",
-                payload,
-            ) or []
-
-            for update in updates:
-                try:
-                    offset = (
-                        int(update["update_id"])
-                        + 1
-                    )
-
-                    handle_message(
-                        token,
-                        allowed_chat_id,
-                        update.get("message")
-                        or {},
-                    )
-
-                except Exception:
-                    log.exception(
-                        "Gagal memproses update Telegram"
-                    )
-
-        except KeyboardInterrupt:
-            log.info(
-                "BOT Usage dihentikan."
-            )
-            break
-
-        except Exception as exc:
-            log.error(
-                "Polling error: %s",
-                exc,
-            )
-            time.sleep(3)
-
-
-if __name__ == "__main__":
-    main()
-BOT_USAGE_PY_EOF
-
-chmod 755 /usr/local/bin/usage.py
-
-# Fail2Ban SSH: gunakan journald pada Debian modern.
-install -d /etc/fail2ban/jail.d
-cat > /etc/fail2ban/jail.d/sshd-systemd.local <<'FAIL2BAN_SSHD_EOF'
-[sshd]
-enabled = true
-backend = systemd
-filter = sshd
-maxretry = 5
-findtime = 10m
-bantime = 1h
-FAIL2BAN_SSHD_EOF
+log "Memasang BOT Usage dari GitHub..."
+
+apt-get install -y python3 python3-venv curl >/dev/null 2>&1
+
+USAGE_URL="https://raw.githubusercontent.com/faiqzuhry/faiqzuhry/main/usage.py"
+USAGE_TMP="/tmp/usage.py.$$"
+
+if ! curl -4fsSL --retry 3 --connect-timeout 15 "$USAGE_URL" -o "$USAGE_TMP"; then
+    rm -f "$USAGE_TMP"
+    colorized_echo red "[x] Gagal mengambil usage.py dari GitHub."
+    return 1
+fi
+
+if [ ! -s "$USAGE_TMP" ] || ! grep -q 'def cek_usage_command' "$USAGE_TMP"; then
+    rm -f "$USAGE_TMP"
+    colorized_echo red "[x] usage.py dari GitHub tidak valid / bukan BOT Check Usage."
+    return 1
+fi
+
+install -m 755 "$USAGE_TMP" /usr/local/bin/usage.py
+rm -f "$USAGE_TMP"
+
+# Isolasi dependency agar Python sistem tidak terganggu.
+BOT_USAGE_VENV="/opt/bot-usage-venv"
+if [ ! -x "$BOT_USAGE_VENV/bin/python" ]; then
+    python3 -m venv "$BOT_USAGE_VENV"
+fi
+
+"$BOT_USAGE_VENV/bin/python" -m pip install --upgrade pip >/dev/null 2>&1 || true
+if ! "$BOT_USAGE_VENV/bin/python" -m pip install 'python-telegram-bot==13.15' >/dev/null 2>&1; then
+    colorized_echo red "[x] Gagal memasang python-telegram-bot 13.15 untuk usage.py."
+    return 1
+fi
+
+# usage.py membaca bot_usage.json relatif terhadap WorkingDirectory.
+if [ ! -f /etc/data/telegram_config.conf ]; then
+    colorized_echo red "[x] /etc/data/telegram_config.conf tidak ditemukan."
+    return 1
+fi
+
+BOT_TOKEN="$(awk -F= '$1=="BOT_TOKEN" || $1=="API_TOKEN" || $1=="TELEGRAM_BOT_TOKEN" {print $2; exit}' /etc/data/telegram_config.conf | tr -d '\r' | sed 's/^['\"]//;s/['\"]$//')"
+CHAT_ID="$(awk -F= '$1=="CHAT_ID" || $1=="TELEGRAM_CHAT_ID" || $1=="chatId" {print $2; exit}' /etc/data/telegram_config.conf | tr -d '\r' | sed 's/^['\"]//;s/['\"]$//')"
+
+if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+    colorized_echo red "[x] BOT_TOKEN/CHAT_ID tidak ditemukan di telegram_config.conf."
+    return 1
+fi
+
+cat > /usr/local/bin/bot_usage.json <<EOF
+{
+  "API_TOKEN": "$BOT_TOKEN",
+  "CHAT_ID": "$CHAT_ID"
+}
+EOF
+chmod 600 /usr/local/bin/bot_usage.json
 
 stage07() {
     set -e
@@ -1435,11 +984,29 @@ sed -i \
     -e '\#/etc/localtime#d' \
     /opt/marzban/docker-compose.yml
 
-# Pastikan image panel dan migration berasal dari upstream Marzban yang sama.
-# Ini mencegah compose custom lama menjalankan kode baru dengan schema lama.
-if grep -qE 'image:[[:space:]]*gozargah/marzban:' /opt/marzban/docker-compose.yml; then
-    sed -i -E 's#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\1latest#' /opt/marzban/docker-compose.yml
+# =========================================================
+# MARZBAN IMAGE FIX
+# Repository docker-compose memakai Docker Hub lama:
+#   gozargah/marzban:latest
+# Gunakan registry resmi GitHub Container Registry (GHCR).
+# =========================================================
+MARZBAN_IMAGE="ghcr.io/gozargah/marzban:latest"
+
+# Paksa service marzban memakai image resmi GHCR.
+# Tidak mengubah image nginx.
+if grep -qE '^[[:space:]]+marzban:[[:space:]]*$' /opt/marzban/docker-compose.yml; then
+    sed -i -E '/^[[:space:]]+marzban:[[:space:]]*$/,/^[[:space:]]+[A-Za-z0-9_.-]+:[[:space:]]*$/ {
+        /^[[:space:]]+image:[[:space:]]*/ s#^[[:space:]]*image:[[:space:]]*.*#    image: ghcr.io/gozargah/marzban:latest#
+    }' /opt/marzban/docker-compose.yml
 fi
+
+# Pastikan service marzban benar-benar mempunyai image GHCR.
+if ! grep -qE '^[[:space:]]+image:[[:space:]]*ghcr\.io/gozargah/marzban:latest[[:space:]]*$' /opt/marzban/docker-compose.yml; then
+    colorized_echo red "Image Marzban GHCR tidak berhasil diterapkan ke docker-compose.yml."
+    return 1
+fi
+
+colorized_echo cyan "Image Marzban: ${MARZBAN_IMAGE}"
 
 # Migration tanpa membuat backup database otomatis sebelum migration.
 DB_BACKUP=""
@@ -1458,11 +1025,26 @@ else
     return 1
 fi
 
-# Download image terbaru sebelum migration.
+# Download image resmi GHCR sebelum migration.
+# Pull langsung juga memastikan masalah registry terlihat jelas di log.
+if ! docker pull "${MARZBAN_IMAGE}" >> /var/log/marzban-bootstrap.log 2>&1; then
+    colorized_echo red "Gagal mengambil image Marzban dari GHCR."
+    colorized_echo yellow "Image: ${MARZBAN_IMAGE}"
+    colorized_echo yellow "Log: /var/log/marzban-bootstrap.log"
+    return 1
+fi
+
+# Sinkronkan image Compose setelah pull berhasil.
 $COMPOSE_CMD pull marzban >> /var/log/marzban-bootstrap.log 2>&1 || {
-    colorized_echo red "Gagal mengambil image Marzban."
+    colorized_echo red "Docker Compose gagal menyiapkan image Marzban."
     return 1
 }
+
+# Verifikasi image benar-benar tersedia secara lokal.
+if ! docker image inspect "${MARZBAN_IMAGE}" >/dev/null 2>&1; then
+    colorized_echo red "Image Marzban tidak tersedia setelah pull."
+    return 1
+fi
 
 # Jalankan Alembic SEBELUM panel dijalankan.
 # Dengan demikian query admin baru tidak dieksekusi pada schema lama.
@@ -1545,49 +1127,13 @@ marzban cli admin delete -u admin -y || log "WARN: cleanup admin dilewati (exit=
 
 
 
-# =========================================================
-# REBUILD VPS
-# Dipasang sebagai /usr/local/bin/rebuild
-# =========================================================
-install_rebuild() {
-    local target="/usr/local/bin/rebuild"
-    local tmp="${target}.tmp"
-    local url="${sfile}/rebuild"
-
-    colorized_echo cyan "[*] Memasang Rebuild VPS..."
-
-    if ! command -v curl >/dev/null 2>&1; then
-        apt-get update -y >/dev/null 2>&1 || true
-        apt-get install -y curl >/dev/null 2>&1 || {
-            colorized_echo yellow "[!] curl tidak tersedia. Rebuild dilewati."
-            return 0
-        }
-    fi
-
-    if curl -4fsSL --retry 3 --connect-timeout 15 --max-time 120 \
-        "$url" -o "$tmp"; then
-        if [ -s "$tmp" ] && bash -n "$tmp" >/dev/null 2>&1; then
-            chmod 755 "$tmp"
-            mv -f "$tmp" "$target"
-            colorized_echo green "[✓] Rebuild VPS terpasang: $target"
-        else
-            rm -f "$tmp"
-            colorized_echo yellow "[!] File Rebuild tidak valid. Instalasi dilanjutkan."
-        fi
-    else
-        rm -f "$tmp"
-        colorized_echo yellow "[!] Gagal mengambil Rebuild. Instalasi dilanjutkan."
-    fi
-}
-
-install_rebuild
 
 run_stage 01 "Validasi OS + input konfigurasi" stage01
 run_stage 02 "Persiapan VPS + paket" stage02
 run_stage 03 "Bootstrap Marzban + Xray" stage03
 run_stage 04 "Profile + VNStat + Speedtest + Gotop" stage04
 run_stage 05 "Nginx + SSL + konfigurasi Xray" stage05
-run_stage 06 "Command LingVPN + Ganti Domain + BWBOT + cron" stage06
+run_stage 06 "Menu + Tools Repository + BWBOT + cron" stage06
 run_stage 07 "Firewall + Fail2ban" stage07
 run_stage 08 "Database + WARP" stage08
 run_stage 09 "Migration database + Admin Marzban" stage09
@@ -1677,19 +1223,6 @@ telegram_final_setup() {
 
 telegram_final_setup
 
-colorized_echo green "╔════════════════════════════════════════════════════╗"
-colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
-colorized_echo green "╚════════════════════════════════════════════════════╝"
-log "INSTALLATION COMPLETE"
-echo
-read -rp "Reboot sekarang? [y/N]: " answer
-if [[ "$answer" =~ ^[Yy]$ ]]; then reboot; fi
-
-# =========================================================
-# FAIQVPN CHECK_USAGE BOT
-# Telegram token/chat ID memakai /etc/data/telegram_config.conf.
-# Tidak memasang telegram-vps-menu.py / remote menu.
-# =========================================================
 install_check_usage_bot() {
     local target="/usr/local/bin/usage.py"
     local service="/etc/systemd/system/check-usage.service"
@@ -1716,7 +1249,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/usr/local/bin
-ExecStart=/usr/bin/python3 /usr/local/bin/usage.py
+ExecStart=/opt/bot-usage-venv/bin/python /usr/local/bin/usage.py
 Restart=always
 RestartSec=5
 
@@ -1739,6 +1272,7 @@ CHECK_USAGE_SERVICE_EOF
     fi
 }
 
+
 # Aktifkan BOT Check Usage sebelum installer menawarkan reboot.
 install_check_usage_bot
 
@@ -1747,7 +1281,7 @@ colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
 colorized_echo green "╚════════════════════════════════════════════════════╝"
 log "INSTALLATION COMPLETE"
 echo
-echo "Telegram Check Usage: /cek_usage atau /cek_usage username"
+echo "Telegram Check Usage: /cek_usage"
 echo "Service: check-usage.service"
 echo
 read -rp "Reboot sekarang? [y/N]: " answer
