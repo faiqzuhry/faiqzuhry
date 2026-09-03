@@ -899,59 +899,9 @@ install_bot_usage() {
         return 1
     fi
 
-    # Telegram membatasi pesan teks sekitar 4096 karakter.
-    # Patch usage.py dilakukan setelah venv tersedia, sehingga installer
-    # tidak pernah memanggil /opt/bot-usage-venv/bin/python terlalu awal.
-    "$venv/bin/python" - "$usage_file" <<'PY'
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-source = path.read_text(encoding="utf-8")
-
-old = "    update.message.reply_text(usage_text, parse_mode='Markdown')"
-new = """    def send_long_message(message, text, parse_mode='Markdown'):
-        max_length = 4000
-
-        if len(text) <= max_length:
-            message.reply_text(text, parse_mode=parse_mode)
-            return
-
-        lines = text.splitlines()
-        chunk = ""
-
-        for line in lines:
-            if len(line) > max_length:
-                if chunk:
-                    message.reply_text(chunk, parse_mode=parse_mode)
-                    chunk = ""
-
-                for i in range(0, len(line), max_length):
-                    message.reply_text(
-                        line[i:i + max_length],
-                        parse_mode=parse_mode
-                    )
-                continue
-
-            candidate = line if not chunk else chunk + "\\n" + line
-
-            if len(candidate) > max_length:
-                if chunk:
-                    message.reply_text(chunk, parse_mode=parse_mode)
-                chunk = line
-            else:
-                chunk = candidate
-
-        if chunk:
-            message.reply_text(chunk, parse_mode=parse_mode)
-
-    send_long_message(update.message, usage_text)"""
-
-if old in source:
-    path.write_text(source.replace(old, new, 1), encoding="utf-8")
-else:
-    print("INFO: Target reply_text lama tidak ditemukan; usage.py dipertahankan.")
-PY
+    # usage.py dari GitHub sudah merupakan versi final dan menangani
+    # filter username + pemecahan pesan panjang sendiri.
+    # Installer TIDAK melakukan patch/penyisipan kode lagi.
 
     # PTB 13.15 membutuhkan dependency lama tertentu.
     "$venv/bin/python" -m pip install --no-cache-dir \
