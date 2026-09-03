@@ -48,22 +48,43 @@ def format_expire_date(expire_timestamp):
     return "No Expiration"
 
 # Fungsi untuk mengambil data dari SQLite
-def get_usage_from_db():
+# /cek_usage          -> semua user
+# /cek_usage Faiq     -> hanya user Faiq
+def get_usage_from_db(username=None):
     db_path = '/var/lib/marzban/db.sqlite3'
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT username, used_traffic, status, data_limit, expire FROM users")
-    users = cursor.fetchall()
+    if username:
+        # Exact username match, tidak membedakan huruf besar/kecil.
+        cursor.execute(
+            "SELECT username, used_traffic, status, data_limit, expire "
+            "FROM users WHERE username = ? COLLATE NOCASE LIMIT 1",
+            (username.strip(),)
+        )
+    else:
+        cursor.execute(
+            "SELECT username, used_traffic, status, data_limit, expire FROM users"
+        )
 
-    usage_text = "🔍 *User Usage List:*\n\n"
+    users = cursor.fetchall()
+    conn.close()
+
+    if username and not users:
+        return f"❌ *Username* : `{username}` tidak ditemukan."
+
+    usage_text = ""
+
     for user, traffic, status, data_limit, expire in users:
-        formatted_traffic = format_traffic(int(traffic))
-        
+        formatted_traffic = format_traffic(int(traffic or 0))
+
         if data_limit is None:
             data_limit_text = "Unlimited"
         else:
-            data_limit_text = "Unlimited" if data_limit == -1 else format_traffic(int(data_limit))
+            data_limit_text = (
+                "Unlimited" if data_limit == -1
+                else format_traffic(int(data_limit))
+            )
 
         expire_text = format_expire_date(expire)
 
@@ -72,14 +93,46 @@ def get_usage_from_db():
         usage_text += f"📋 *Status* : `{status}`\n"
         usage_text += f"🔐 *Data Limit* : `{data_limit_text}`\n"
         usage_text += f"⏳ *Expires At* : `{expire_text}`\n\n"
-    
-    conn.close()
+
     return usage_text
+
+# Telegram membatasi panjang satu pesan. Jika /cek_usage tanpa username
+# menghasilkan daftar sangat panjang, kirim dalam beberapa pesan.
+def send_usage_text(update: Update, usage_text):
+    max_length = 4000
+
+    if len(usage_text) <= max_length:
+        update.message.reply_text(usage_text, parse_mode='Markdown')
+        return
+
+    chunks = []
+    current = ""
+
+    for block in usage_text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+
+        candidate = block if not current else current + "\n\n" + block
+
+        if len(candidate) <= max_length:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = block
+
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        update.message.reply_text(chunk, parse_mode='Markdown')
 
 # Fungsi handler bot untuk command /cek_usage
 def cek_usage_command(update: Update, context: CallbackContext):
-    usage_text = get_usage_from_db()
-    update.message.reply_text(usage_text, parse_mode='Markdown')
+    username = " ".join(context.args).strip() if context.args else None
+    usage_text = get_usage_from_db(username)
+    send_usage_text(update, usage_text)
 
 # Main function untuk menjalankan bot
 def main():
