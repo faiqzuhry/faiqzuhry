@@ -1279,29 +1279,71 @@ echo "Marzban siap; melanjutkan ke pembuatan token API."
 
 stage10() {
     set -e
-#instal token
-if ! curl -4fsS -X POST \
-  "https://${domain}:${port}/api/admin/token" \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode "grant_type=password" \
-  --data-urlencode "username=${userpanel}" \
-  --data-urlencode "password=${passpanel}" \
-  --data-urlencode "scope=" \
-  --data-urlencode "client_id=" \
-  --data-urlencode "client_secret=" > /etc/data/token.json; then
+# =========================================================
+# TOKEN API MARZBAN - ROBUST / TIDAK BERGANTUNG DNS DOMAIN
+# Coba endpoint lokal terlebih dahulu karena pada VPS baru
+# domain:port bisa belum resolve / belum bisa diakses dari VPS.
+# =========================================================
+mkdir -p /etc/data
+TOKEN_FILE="/etc/data/token.json"
+TOKEN_TMP="/etc/data/.token.json.tmp"
+rm -f "$TOKEN_TMP"
+
+token_ok() {
+    [ -s "$TOKEN_TMP" ] || return 1
+    if command -v jq >/dev/null 2>&1; then
+        jq -e '.access_token' "$TOKEN_TMP" >/dev/null 2>&1
+    else
+        grep -q '"access_token"' "$TOKEN_TMP"
+    fi
+}
+
+request_token() {
+    local url="$1"
+    : > "$TOKEN_TMP"
+    curl -4ksS --connect-timeout 8 --max-time 20 -X POST "$url" \
+      -H 'accept: application/json' \
+      -H 'Content-Type: application/x-www-form-urlencoded' \
+      --data-urlencode "grant_type=password" \
+      --data-urlencode "username=${userpanel}" \
+      --data-urlencode "password=${passpanel}" \
+      --data-urlencode "scope=" \
+      --data-urlencode "client_id=" \
+      --data-urlencode "client_secret=" > "$TOKEN_TMP" 2>/dev/null
+}
+
+colorized_echo cyan "Membuat token API Marzban..."
+TOKEN_SUCCESS=0
+
+# 1. Localhost HTTPS
+if request_token "https://127.0.0.1:${port}/api/admin/token" && token_ok; then
+    TOKEN_SUCCESS=1
+fi
+
+# 2. Localhost HTTP
+if [ "$TOKEN_SUCCESS" -eq 0 ] && request_token "http://127.0.0.1:${port}/api/admin/token" && token_ok; then
+    TOKEN_SUCCESS=1
+fi
+
+# 3. Domain HTTPS sebagai fallback
+if [ "$TOKEN_SUCCESS" -eq 0 ] && request_token "https://${domain}:${port}/api/admin/token" && token_ok; then
+    TOKEN_SUCCESS=1
+fi
+
+if [ "$TOKEN_SUCCESS" -eq 0 ]; then
     colorized_echo red "Gagal membuat token API Marzban."
-    cat /etc/data/token.json 2>/dev/null || true
+    echo "Periksa status Marzban dan port ${port}:"
+    docker compose -f /opt/marzban/docker-compose.yml ps 2>/dev/null || true
+    echo
+    echo "Respons terakhir:"
+    cat "$TOKEN_TMP" 2>/dev/null || true
+    rm -f "$TOKEN_TMP"
     return 1
 fi
 
-if command -v jq >/dev/null 2>&1; then
-    jq -e '.access_token' /etc/data/token.json >/dev/null 2>&1 || {
-        colorized_echo red "Respons token API tidak valid."
-        cat /etc/data/token.json
-        return 1
-    }
-fi
+mv -f "$TOKEN_TMP" "$TOKEN_FILE"
+chmod 600 "$TOKEN_FILE"
+colorized_echo green "Token API Marzban berhasil dibuat."
 cd
 sed -i -e 's/\r$//' /usr/bin/routing
 if command -v neofetch >/dev/null 2>&1; then
