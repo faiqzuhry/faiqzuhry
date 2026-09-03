@@ -1279,98 +1279,151 @@ echo "Marzban siap; melanjutkan ke pembuatan token API."
 
 stage10() {
     set -e
-# =========================================================
-# TOKEN API MARZBAN - ROBUST / TIDAK BERGANTUNG DNS DOMAIN
-# Coba endpoint lokal terlebih dahulu karena pada VPS baru
-# domain:port bisa belum resolve / belum bisa diakses dari VPS.
-# =========================================================
-mkdir -p /etc/data
-TOKEN_FILE="/etc/data/token.json"
-TOKEN_TMP="/etc/data/.token.json.tmp"
-rm -f "$TOKEN_TMP"
 
-token_ok() {
-    [ -s "$TOKEN_TMP" ] || return 1
-    if command -v jq >/dev/null 2>&1; then
-        jq -e '.access_token' "$TOKEN_TMP" >/dev/null 2>&1
-    else
-        grep -q '"access_token"' "$TOKEN_TMP"
-    fi
-}
+    # =========================================================
+    # TOKEN API MARZBAN - FINAL ROBUST
+    # Jangan langsung request setelah container start.
+    # Marzban/uvicorn butuh waktu untuk bind port dan siap menerima API.
+    # =========================================================
+    mkdir -p /etc/data
+    chmod 700 /etc/data
 
-request_token() {
-    local url="$1"
-    : > "$TOKEN_TMP"
-    curl -4ksS --connect-timeout 8 --max-time 20 -X POST "$url" \
-      -H 'accept: application/json' \
-      -H 'Content-Type: application/x-www-form-urlencoded' \
-      --data-urlencode "grant_type=password" \
-      --data-urlencode "username=${userpanel}" \
-      --data-urlencode "password=${passpanel}" \
-      --data-urlencode "scope=" \
-      --data-urlencode "client_id=" \
-      --data-urlencode "client_secret=" > "$TOKEN_TMP" 2>/dev/null
-}
-
-colorized_echo cyan "Membuat token API Marzban..."
-TOKEN_SUCCESS=0
-
-# 1. Localhost HTTPS
-if request_token "https://127.0.0.1:${port}/api/admin/token" && token_ok; then
-    TOKEN_SUCCESS=1
-fi
-
-# 2. Localhost HTTP
-if [ "$TOKEN_SUCCESS" -eq 0 ] && request_token "http://127.0.0.1:${port}/api/admin/token" && token_ok; then
-    TOKEN_SUCCESS=1
-fi
-
-# 3. Domain HTTPS sebagai fallback
-if [ "$TOKEN_SUCCESS" -eq 0 ] && request_token "https://${domain}:${port}/api/admin/token" && token_ok; then
-    TOKEN_SUCCESS=1
-fi
-
-if [ "$TOKEN_SUCCESS" -eq 0 ]; then
-    colorized_echo red "Gagal membuat token API Marzban."
-    echo "Periksa status Marzban dan port ${port}:"
-    docker compose -f /opt/marzban/docker-compose.yml ps 2>/dev/null || true
-    echo
-    echo "Respons terakhir:"
-    cat "$TOKEN_TMP" 2>/dev/null || true
+    TOKEN_FILE="/etc/data/token.json"
+    TOKEN_TMP="/etc/data/.token.json.tmp"
     rm -f "$TOKEN_TMP"
-    return 1
-fi
 
-mv -f "$TOKEN_TMP" "$TOKEN_FILE"
-chmod 600 "$TOKEN_FILE"
-colorized_echo green "Token API Marzban berhasil dibuat."
-cd
-sed -i -e 's/\r$//' /usr/bin/routing
-if command -v neofetch >/dev/null 2>&1; then
-    neofetch
-elif command -v fastfetch >/dev/null 2>&1; then
-    fastfetch
-fi
-if [ -f ~/.config/neofetch/config.conf ]; then
-    sed -i '/info title/d' ~/.config/neofetch/config.conf
-    sed -i '/info "Packages" packages/d' ~/.config/neofetch/config.conf
-    sed -i '/info "Shell" shell/d' ~/.config/neofetch/config.conf
-    sed -i '/info "Resolution" resolution/d' ~/.config/neofetch/config.conf
-    sed -i '/info "Memory" memory/d' ~/.config/neofetch/config.conf
-fi
-command -v profile >/dev/null 2>&1 && profile || true
-echo "Untuk data login dashboard Marzban: " | tee -a /root/log-install.txt
-echo "-=================================-" | tee -a /root/log-install.txt
-echo "URL       : https://${domain}:${port}/dashboard" | tee -a /root/log-install.txt
-echo "username  : ${userpanel}" | tee -a /root/log-install.txt
-echo "password  : ${passpanel}" | tee -a /root/log-install.txt
-echo "-=================================-" | tee -a /root/log-install.txt
-echo "Script telah berhasil di install" | tee -a /root/log-install.txt
-# Install script dipertahankan agar --resume tetap tersedia.
-marzban cli admin delete -u admin -y || log "WARN: cleanup admin dilewati (exit=$?)"
+    # Ambil port yang benar-benar digunakan Marzban dari .env.
+    # Jika tidak ditemukan, gunakan port dari konfigurasi installer.
+    API_PORT=""
+    if [ -f /opt/marzban/.env ]; then
+        API_PORT="$(sed -n 's/^[[:space:]]*UVICORN_PORT[[:space:]]*=[[:space:]]*//p' /opt/marzban/.env | tail -n 1 | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
+    fi
+    [ -n "$API_PORT" ] || API_PORT="${port}"
+    [ -n "$API_PORT" ] || API_PORT="8000"
+
+    token_ok() {
+        [ -s "$TOKEN_TMP" ] || return 1
+        if command -v jq >/dev/null 2>&1; then
+            jq -e '(.access_token // "") | length > 0' "$TOKEN_TMP" >/dev/null 2>&1
+        else
+            grep -q '"access_token"[[:space:]]*:' "$TOKEN_TMP"
+        fi
+    }
+
+    request_token() {
+        local url="$1"
+        : > "$TOKEN_TMP"
+        curl -4ksS --connect-timeout 5 --max-time 15 \
+            -X POST "$url" \
+            -H 'accept: application/json' \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=password' \
+            --data-urlencode "username=${userpanel}" \
+            --data-urlencode "password=${passpanel}" \
+            --data-urlencode 'scope=' \
+            --data-urlencode 'client_id=' \
+            --data-urlencode 'client_secret=' \
+            > "$TOKEN_TMP" 2>/dev/null
+    }
+
+    colorized_echo cyan "Menunggu Marzban benar-benar siap..."
+
+    # Tunggu sampai port API benar-benar listen.
+    READY=0
+    for i in $(seq 1 45); do
+        if (command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq ":${API_PORT}$|\]:${API_PORT}$") \
+           || (command -v netstat >/dev/null 2>&1 && netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq ":${API_PORT}$|\]:${API_PORT}$"); then
+            READY=1
+            break
+        fi
+
+        # Pastikan container tetap hidup sambil menunggu.
+        if ! docker inspect -f '{{.State.Running}}' marzban-marzban-1 2>/dev/null | grep -q true; then
+            $COMPOSE_CMD -f /opt/marzban/docker-compose.yml up -d marzban >/dev/null 2>&1 || true
+        fi
+        sleep 2
+    done
+
+    if [ "$READY" -eq 0 ]; then
+        colorized_echo yellow "Port ${API_PORT} belum terdeteksi setelah 90 detik; tetap mencoba API lokal."
+    else
+        colorized_echo green "Marzban API sudah listen di port ${API_PORT}."
+    fi
+
+    colorized_echo cyan "Membuat token API Marzban..."
+    TOKEN_SUCCESS=0
+
+    # Coba lokal berulang kali. Ini mengatasi race-condition saat container baru start.
+    for i in $(seq 1 15); do
+        if request_token "https://127.0.0.1:${API_PORT}/api/admin/token" && token_ok; then
+            TOKEN_SUCCESS=1
+            break
+        fi
+
+        if request_token "http://127.0.0.1:${API_PORT}/api/admin/token" && token_ok; then
+            TOKEN_SUCCESS=1
+            break
+        fi
+
+        sleep 2
+    done
+
+    # Domain hanya fallback terakhir.
+    if [ "$TOKEN_SUCCESS" -eq 0 ]; then
+        for i in $(seq 1 5); do
+            if request_token "https://${domain}:${API_PORT}/api/admin/token" && token_ok; then
+                TOKEN_SUCCESS=1
+                break
+            fi
+            sleep 2
+        done
+    fi
+
+    if [ "$TOKEN_SUCCESS" -eq 0 ]; then
+        colorized_echo red "Gagal membuat token API Marzban."
+        echo "Port API yang digunakan: ${API_PORT}"
+        echo "Periksa status Marzban dan listener port:"
+        ss -ltnp 2>/dev/null | grep -E ":${API_PORT}[[:space:]]|:${API_PORT}$" || true
+        echo
+        $COMPOSE_CMD -f /opt/marzban/docker-compose.yml ps 2>/dev/null || true
+        echo
+        echo "Log Marzban terakhir:"
+        $COMPOSE_CMD -f /opt/marzban/docker-compose.yml logs --tail=40 marzban 2>/dev/null || true
+        echo
+        echo "Respons terakhir:"
+        cat "$TOKEN_TMP" 2>/dev/null || true
+        rm -f "$TOKEN_TMP"
+        return 1
+    fi
+
+    mv -f "$TOKEN_TMP" "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+    colorized_echo green "Token API Marzban berhasil dibuat."
+
+    cd
+    sed -i -e 's/\r$//' /usr/bin/routing
+    if command -v neofetch >/dev/null 2>&1; then
+        neofetch
+    elif command -v fastfetch >/dev/null 2>&1; then
+        fastfetch
+    fi
+    if [ -f ~/.config/neofetch/config.conf ]; then
+        sed -i '/info title/d' ~/.config/neofetch/config.conf
+        sed -i '/info "Packages" packages/d' ~/.config/neofetch/config.conf
+        sed -i '/info "Shell" shell/d' ~/.config/neofetch/config.conf
+        sed -i '/info "Resolution" resolution/d' ~/.config/neofetch/config.conf
+        sed -i '/info "Memory" memory/d' ~/.config/neofetch/config.conf
+    fi
+    command -v profile >/dev/null 2>&1 && profile || true
+    echo "Untuk data login dashboard Marzban: " | tee -a /root/log-install.txt
+    echo "-=================================-" | tee -a /root/log-install.txt
+    echo "URL       : https://${domain}:${port}/dashboard" | tee -a /root/log-install.txt
+    echo "username  : ${userpanel}" | tee -a /root/log-install.txt
+    echo "password  : ${passpanel}" | tee -a /root/log-install.txt
+    echo "-=================================-" | tee -a /root/log-install.txt
+    echo "Script telah berhasil di install" | tee -a /root/log-install.txt
+    marzban cli admin delete -u admin -y || log "WARN: cleanup admin dilewati (exit=$?)"
 }
-
-
 
 # =========================================================
 # REBUILD VPS
