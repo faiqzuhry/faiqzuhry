@@ -401,19 +401,75 @@ stage03() {
 export TZ="${TZ:-$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)}"
 # ===== END TIMEZONE NEUTRAL =====
 #Install Marzban
-# Gunakan script resmi hanya untuk menyiapkan Docker/CLI.
-# Output ditulis ke log agar traceback sementara tidak memenuhi terminal.
-download_required "https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh" "/tmp/marzban-install.sh" "installer resmi Marzban"
+# Jangan mengeksekusi perintah `install` dari marzban.sh resmi di sini.
+# Stage 03 memasang Docker dan menyiapkan CLI wrapper; file .env + compose
+# custom dipasang sesudahnya dan Stage 09 melakukan migration + up.
+# Ini menghindari ketergantungan pada perubahan internal marzban.sh (termasuk
+# follow_marzban_logs) yang dapat berubah atau gagal parse saat upstream berubah.
 
-# Hapus pemanggilan follow log agar installer induk tidak menggantung.
-sed -i '/^[[:space:]]*follow_marzban_logs[[:space:]]*$/d' /tmp/marzban-install.sh
+if ! command -v docker >/dev/null 2>&1; then
+    colorized_echo cyan "Docker belum terpasang. Memasang Docker..."
+    if ! curl -4fsSL --retry 3 --connect-timeout 5 --max-time 60 https://get.docker.com | sh >>/var/log/marzban-bootstrap.log 2>&1; then
+        colorized_echo red "Gagal memasang Docker."
+        tail -n 80 /var/log/marzban-bootstrap.log || true
+        return 1
+    fi
+fi
 
-if ! bash /tmp/marzban-install.sh install --version "$MARZBAN_VERSION" 2>&1 | tee -a /var/log/marzban-bootstrap.log; then
-    colorized_echo red "Installer resmi Marzban ${MARZBAN_VERSION} gagal."
-    tail -n 80 /var/log/marzban-bootstrap.log || true
+systemctl enable --now docker >/dev/null 2>&1 || true
+
+# Pastikan Docker Compose tersedia. Docker resmi modern menyediakan `docker compose`.
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_CMD="docker-compose"
+else
+    colorized_echo red "Docker Compose tidak tersedia setelah Docker dipasang."
+    docker version || true
     return 1
 fi
-rm -f /tmp/marzban-install.sh
+
+# Pasang CLI host Marzban dari script resmi hanya jika file resmi valid.
+# Jika upstream sedang mengirim file yang rusak/tidak lengkap, jangan biarkan
+# syntax error menghentikan installer; buat wrapper CLI yang memakai container.
+MARZBAN_SCRIPT="/tmp/marzban-install.sh"
+if download_required "https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh" "$MARZBAN_SCRIPT" "installer resmi Marzban"; then
+    if bash -n "$MARZBAN_SCRIPT" >/dev/null 2>&1; then
+        install -m 755 "$MARZBAN_SCRIPT" /usr/local/bin/marzban
+        colorized_echo green "[✓] Marzban CLI resmi terpasang."
+    else
+        colorized_echo yellow "Installer resmi Marzban gagal syntax-check; memakai CLI wrapper container."
+    fi
+else
+    colorized_echo yellow "Installer resmi Marzban tidak dapat diambil; memakai CLI wrapper container."
+fi
+rm -f "$MARZBAN_SCRIPT"
+
+# Wrapper dipakai sebagai fallback dan juga membuat `marzban cli ...` stabil
+# tanpa harus menjalankan bootstrap installer upstream.
+cat > /usr/local/bin/marzban-wrapper <<'EOF_MARZBAN_WRAPPER'
+#!/usr/bin/env bash
+set -e
+COMPOSE_FILE=/opt/marzban/docker-compose.yml
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE=(docker-compose)
+else
+    echo "Docker Compose tidak tersedia." >&2
+    exit 1
+fi
+if [[ "${1:-}" == "cli" ]]; then
+    shift
+fi
+exec "${COMPOSE[@]}" -f "$COMPOSE_FILE" -p marzban exec -T marzban marzban-cli "$@"
+EOF_MARZBAN_WRAPPER
+chmod 755 /usr/local/bin/marzban-wrapper
+
+# Jika script resmi tidak valid, gunakan wrapper sebagai /usr/local/bin/marzban.
+if ! command -v marzban >/dev/null 2>&1; then
+    ln -sf /usr/local/bin/marzban-wrapper /usr/local/bin/marzban
+fi
 
 #install subs
 download_required "$sfile/index.html" "/opt/marzban/index.html" "template index"
@@ -1489,9 +1545,13 @@ stage11() {
     install -m 755 /tmp/xray-cloudfront-install/xray "$CF_BIN"
     rm -rf /tmp/xray-cloudfront-install
 
-    if ! "$CF_BIN" version 2>/dev/null | grep -q "Xray ${CF_VERSION#v}"; then
+    # Jangan gunakan `xray version | grep -q` langsung karena installer
+    # memakai pipefail. grep -q dapat menutup pipe lebih awal dan membuat
+    # Xray menerima SIGPIPE, sehingga verifikasi palsu dianggap gagal.
+    CF_VERSION_OUTPUT="$("$CF_BIN" version 2>/dev/null || true)"
+    if ! printf '%s\\n' "$CF_VERSION_OUTPUT" | grep -q "Xray ${CF_VERSION#v}"; then
         colorized_echo red "CloudFront Xray bukan ${CF_VERSION}."
-        "$CF_BIN" version || true
+        printf '%s\\n' "$CF_VERSION_OUTPUT"
         return 1
     fi
 
@@ -1877,8 +1937,13 @@ EOFXUP
 exec /usr/local/bin/xray-main-update status
 EOFXV
     chmod 755 /usr/local/bin/xray-version
-    "$MAIN_BIN" version | grep -q "Xray ${XRAY_PINNED_VERSION#v}"
-    [ ! -x "$CF_BIN" ] || "$CF_BIN" version | grep -q "Xray ${XRAY_PINNED_VERSION#v}"
+    MAIN_VERSION_OUTPUT="$("$MAIN_BIN" version 2>/dev/null || true)"
+    printf '%s\\n' "$MAIN_VERSION_OUTPUT" | grep -q "Xray ${XRAY_PINNED_VERSION#v}"
+
+    if [ -x "$CF_BIN" ]; then
+        CF_VERSION_OUTPUT="$("$CF_BIN" version 2>/dev/null || true)"
+        printf '%s\\n' "$CF_VERSION_OUTPUT" | grep -q "Xray ${XRAY_PINNED_VERSION#v}"
+    fi
     $COMPOSE_CMD -f "$COMPOSE" config --quiet
     colorized_echo green "[✓] Xray version manager terpasang."
     colorized_echo cyan "Main Xray : v26.9.9"
