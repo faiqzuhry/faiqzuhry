@@ -6,9 +6,45 @@ sfile="https://raw.githubusercontent.com/faiqzuhry/faiqzuhry/main"
 # TIMEZONE POLICY: NEUTRAL — jangan set timezone berdasarkan IP/lokasi.
 STATE_DIR="/var/lib/lingvpn-install/state"
 LOG_FILE="/root/lingvpn-install.log"
+# Pin Marzban/Xray so future upstream changes cannot silently alter this build.
+MARZBAN_VERSION="v0.8.4"
+XRAY_PINNED_VERSION="v26.9.9"
 mkdir -p "$STATE_DIR"
 touch "$LOG_FILE"
 set -o pipefail
+
+download_required() {
+    local url="$1" out="$2" label="${3:-file}"
+    local tmp="${out}.tmp.$$"
+    mkdir -p "$(dirname "$out")"
+    rm -f "$tmp"
+    if ! curl -4fL --retry 5 --retry-delay 2 --connect-timeout 15 --max-time 180 "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        colorized_echo red "[ERROR] Gagal mengambil ${label}: ${url}"
+        return 1
+    fi
+    if [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        colorized_echo red "[ERROR] ${label} kosong setelah download."
+        return 1
+    fi
+    mv -f "$tmp" "$out"
+}
+
+download_optional() {
+    local url="$1" out="$2" label="${3:-file}"
+    local tmp="${out}.tmp.$$"
+    mkdir -p "$(dirname "$out")"
+    rm -f "$tmp"
+    if curl -4fL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 120 "$url" -o "$tmp" && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$out"
+        colorized_echo green "[✓] ${label} tersedia."
+    else
+        rm -f "$tmp"
+        colorized_echo yellow "[!] ${label} tidak tersedia; bagian opsional dilewati."
+    fi
+    return 0
+}
 
 colorized_echo() {
     local color=$1 text=$2
@@ -54,7 +90,7 @@ USAGE
 case "${1:-}" in
   --status)
     echo "=== STATUS INSTALLASI LINGVPN ==="
-    for i in {01..10}; do
+    for i in {01..12}; do
       if [ -f "$STATE_DIR/stage_$i.done" ]; then echo "[✓] Tahap $i selesai"; else echo "[ ] Tahap $i belum selesai"; fi
     done
     echo "Log: $LOG_FILE"
@@ -77,7 +113,7 @@ run_stage(){
     fi
     echo
     colorized_echo cyan "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    colorized_echo cyan "[→] Tahap ${id}/10: ${name}"
+    colorized_echo cyan "[→] Tahap ${id}/12: ${name}"
     colorized_echo cyan "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     if "$func"; then
         touch "$STATE_DIR/stage_${id}.done"
@@ -340,7 +376,7 @@ apt-get -y --purge remove sendmail*;
 apt-get -y --purge remove bind9*;
 
 #install benchmark
-wget -O /usr/bin/bench "https://raw.githubusercontent.com/teddysun/across/master/bench.sh" && chmod +x /usr/bin/bench
+download_optional "https://raw.githubusercontent.com/teddysun/across/master/bench.sh" "/usr/bin/bench" "benchmark bench"; chmod +x /usr/bin/bench 2>/dev/null || true
 
 #install toolkit
 sudo apt-get install -y git perl libio-socket-inet6-perl libsocket6-perl libio-socket-ssl-perl libwww-perl zlib1g-dev dbus iftop zip unzip wget net-tools curl ca-certificates nano sed screen gnupg bc build-essential dirmngr dnsutils at htop iptables cron lsof lnav xz-utils
@@ -367,35 +403,32 @@ export TZ="${TZ:-$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/
 #Install Marzban
 # Gunakan script resmi hanya untuk menyiapkan Docker/CLI.
 # Output ditulis ke log agar traceback sementara tidak memenuhi terminal.
-curl -fsSL https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh -o /tmp/marzban-install.sh
+download_required "https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh" "/tmp/marzban-install.sh" "installer resmi Marzban"
 
-# Jalankan installer resmi Marzban tanpa follow log foreground.
-# Script resmi menjalankan follow_marzban_logs setelah up_marzban,
-# sehingga instalasi utama akan menunggu Ctrl+C. Di sini hanya pemanggilan
-# follow tersebut di dalam install_command yang dinonaktifkan.
-if [ -s /tmp/marzban-install.sh ]; then
-    awk '
-        /^install_command\(\)/ { in_install=1 }
-        /^install_yq\(\)/ { in_install=0 }
-        in_install && /^[[:space:]]*follow_marzban_logs[[:space:]]*$/ { next }
-        { print }
-    ' /tmp/marzban-install.sh > /tmp/marzban-install.no-follow.sh
-    mv -f /tmp/marzban-install.no-follow.sh /tmp/marzban-install.sh
-fi
+# Hapus pemanggilan follow log agar installer induk tidak menggantung.
+sed -i '/^[[:space:]]*follow_marzban_logs[[:space:]]*$/d' /tmp/marzban-install.sh
 
-if ! bash /tmp/marzban-install.sh install 2>&1 | tee -a /var/log/marzban-bootstrap.log; then
-    colorized_echo yellow "Bootstrap Marzban selesai dengan peringatan. Instalasi utama akan dilanjutkan dengan konfigurasi resmi di bawah."
+if ! bash /tmp/marzban-install.sh install --version "$MARZBAN_VERSION" 2>&1 | tee -a /var/log/marzban-bootstrap.log; then
+    colorized_echo red "Installer resmi Marzban ${MARZBAN_VERSION} gagal."
+    tail -n 80 /var/log/marzban-bootstrap.log || true
+    return 1
 fi
 rm -f /tmp/marzban-install.sh
 
 #install subs
-wget -O /opt/marzban/index.html "https://cdn.jsdelivr.net/gh/MuhammadAshouri/marzban-templates@master/template-01/index.html"
+download_required "$sfile/index.html" "/opt/marzban/index.html" "template index"
 
 #install env
-wget -O /opt/marzban/.env "$sfile/env"
+download_required "$sfile/env" "/opt/marzban/.env" "Marzban .env custom"
 
 #install compose
-wget -O /opt/marzban/docker-compose.yml "$sfile/docker-compose.yml"
+download_required "$sfile/docker-compose.yml" "/opt/marzban/docker-compose.yml" "docker-compose custom"
+    if grep -qE 'image:[[:space:]]*gozargah/marzban:' /opt/marzban/docker-compose.yml; then
+        sed -i -E "s#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\\1${MARZBAN_VERSION}#" /opt/marzban/docker-compose.yml
+    else
+        colorized_echo red "Image Marzban tidak ditemukan di docker-compose custom."
+        return 1
+    fi
 
 # Hapus seluruh bind-mount timezone dari Compose.
 # Timezone host/container tidak dikonfigurasi oleh installer.
@@ -411,48 +444,52 @@ mkdir -p /etc/autokill/penalty_logs
 mkdir -p /var/lib/marzban/assets
 mkdir -p /var/lib/marzban/core
 
-# Install Xray sesuai arsitektur VPS
+# =========================================================
+# XRAY MAIN CORE - PINNED / UPDATE-SAFE
+# =========================================================
+XRAY_MAIN_VERSION="${XRAY_PINNED_VERSION}"
+XRAY_VERSION_FILE="/etc/marzban-xray-versions.conf"
 XRAY_ARCH="$(uname -m)"
 case "$XRAY_ARCH" in
-    x86_64)
-        XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-        ;;
-    aarch64|arm64)
-        XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip"
-        ;;
-    *)
-        colorized_echo red "Arsitektur VPS tidak didukung: $XRAY_ARCH"
-        exit 1
-        ;;
+    x86_64) XRAY_ASSET="Xray-linux-64.zip" ;;
+    aarch64|arm64) XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;;
+    *) colorized_echo red "Arsitektur VPS tidak didukung: $XRAY_ARCH"; exit 1 ;;
 esac
-
+XRAY_DIR="/var/lib/marzban/xray-core"
+XRAY_BIN="${XRAY_DIR}/xray"
 rm -rf /tmp/xray-install
-mkdir -p /tmp/xray-install
-
-curl -fL --retry 5 --retry-delay 2 -o /tmp/xray-install/xray.zip "$XRAY_URL" || {
-    colorized_echo red "Gagal download Xray dari sumber resmi."
-    exit 1
-}
-
-unzip -oq /tmp/xray-install/xray.zip xray -d /tmp/xray-install || {
-    colorized_echo red "Gagal extract Xray."
-    exit 1
-}
-
-if [ ! -s /tmp/xray-install/xray ]; then
-    colorized_echo red "Binary Xray kosong/tidak ditemukan."
+mkdir -p /tmp/xray-install "$XRAY_DIR"
+XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_MAIN_VERSION}/${XRAY_ASSET}"
+colorized_echo cyan "Memasang Xray Main Core ${XRAY_MAIN_VERSION}..."
+curl -fL --retry 5 --retry-delay 2 -o /tmp/xray-install/xray.zip "$XRAY_URL"
+unzip -oq /tmp/xray-install/xray.zip xray -d /tmp/xray-install
+[ -s /tmp/xray-install/xray ] || { colorized_echo red "Binary Xray kosong/tidak ditemukan."; exit 1; }
+install -m 755 /tmp/xray-install/xray "$XRAY_BIN"
+rm -rf /tmp/xray-install
+XRAY_VERSION_OUTPUT="$($XRAY_BIN version 2>/dev/null || true)"
+if ! printf '%s\n' "$XRAY_VERSION_OUTPUT" | grep -q "Xray ${XRAY_MAIN_VERSION#v}"; then
+    colorized_echo red "Versi Xray tidak sesuai. Diharapkan ${XRAY_MAIN_VERSION}."
+    printf '%s\n' "$XRAY_VERSION_OUTPUT"
     exit 1
 fi
+if grep -qE '^XRAY_EXECUTABLE_PATH[[:space:]]*=' /opt/marzban/.env; then
+    sed -i -E 's#^XRAY_EXECUTABLE_PATH[[:space:]]*=.*#XRAY_EXECUTABLE_PATH = "/var/lib/marzban/xray-core/xray"#' /opt/marzban/.env
+else
+    printf '\nXRAY_EXECUTABLE_PATH = "/var/lib/marzban/xray-core/xray"\n' >> /opt/marzban/.env
+fi
+if grep -qE '^XRAY_ASSETS_PATH[[:space:]]*=' /opt/marzban/.env; then
+    sed -i -E 's#^XRAY_ASSETS_PATH[[:space:]]*=.*#XRAY_ASSETS_PATH = "/var/lib/marzban/assets"#' /opt/marzban/.env
+else
+    printf 'XRAY_ASSETS_PATH = "/var/lib/marzban/assets"\n' >> /opt/marzban/.env
+fi
+colorized_echo green "[✓] Main Xray ${XRAY_MAIN_VERSION} terpasang: ${XRAY_BIN}"
+$XRAY_BIN version | head -n 2
 
-install -m 755 /tmp/xray-install/xray /var/lib/marzban/core/xray
-rm -rf /tmp/xray-install
-
-/var/lib/marzban/core/xray version >/dev/null 2>&1 || {
-    colorized_echo red "Binary Xray tidak dapat dijalankan. Arsitektur: $XRAY_ARCH"
-    exit 1
-}
-
-colorized_echo green "Xray berhasil dipasang: $XRAY_ARCH"
+cat > "$XRAY_VERSION_FILE" <<EOFVER
+XRAY_MAIN_VERSION="${XRAY_MAIN_VERSION}"
+XRAY_CLOUDFRONT_VERSION="${XRAY_PINNED_VERSION}"
+EOFVER
+chmod 644 "$XRAY_VERSION_FILE"
 
 }
 
@@ -461,8 +498,8 @@ stage04() {
     set -e
 #profile
 echo -e 'profile' >> /root/.profile
-wget -O /usr/bin/profile "$sfile/profile";
-chmod +x /usr/bin/profile
+download_optional "$sfile/profile" "/usr/bin/profile" "profile";
+chmod +x /usr/bin/profile 2>/dev/null || true
 # Neofetch sudah tidak tersedia pada sebagian release baru (termasuk Debian 13).
 # Gunakan fastfetch jika tersedia; neofetch hanya dipasang bila paket tersedia.
 if apt-cache show neofetch >/dev/null 2>&1; then
@@ -520,9 +557,9 @@ stage05() {
 mkdir -p /var/log/nginx
 touch /var/log/nginx/access.log
 touch /var/log/nginx/error.log
-wget -O /opt/marzban/nginx.conf "$sfile/nginx.conf"
-wget -O /opt/marzban/default.conf "$sfile/vps.conf"
-wget -O /opt/marzban/xray.conf "$sfile/xray.conf"
+download_required "$sfile/nginx.conf" "/opt/marzban/nginx.conf" "Nginx/Xray config nginx.conf"
+download_required "$sfile/vps.conf" "/opt/marzban/default.conf" "Nginx/Xray config vps.conf"
+download_required "$sfile/xray.conf" "/opt/marzban/xray.conf" "Nginx/Xray config xray.conf"
 # Sinkronkan server_name Xray dengan domain yang dimasukkan saat instalasi.
 domain="$(cat /etc/data/domain 2>/dev/null || printf "")"
 if [ -z "$domain" ]; then echo "ERROR: domain kosong."; exit 1; fi
@@ -544,7 +581,7 @@ curl -4fsSL https://get.acme.sh | sh -s email="$email"
 /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 /root/.acme.sh/acme.sh --server letsencrypt --register-account --issue -d "$domain" --standalone -k ec-256 --debug
 ~/.acme.sh/acme.sh --installcert -d "$domain" --fullchainpath /var/lib/marzban/xray.crt --keypath /var/lib/marzban/xray.key --ecc
-wget -O /var/lib/marzban/xray_config.json "$sfile/xray_config.json"
+download_required "$sfile/xray_config.json" "/var/lib/marzban/xray_config.json" "Xray config JSON"
 
 }
 
@@ -554,40 +591,38 @@ stage06() {
 #install command
 cd /usr/bin
 #Additional
-wget -O status "$sfile/status" && chmod +x status
-wget -qO /usr/bin/menu "$sfile/menu" && chmod 755 /usr/bin/menu
-test -s /usr/bin/menu || { echo "ERROR: file menu kosong/gagal di-download."; exit 1; }
+download_required "$sfile/status" "/usr/bin/status" "command status" && chmod +x "/usr/bin/status"
+download_required "$sfile/menu" "/usr/bin/menu" "command menu" && chmod 755 /usr/bin/menu
 test -s /usr/bin/menu || { echo "ERROR: file menu kosong/gagal di-download."; exit 1; }
 bash -n /usr/bin/menu || { echo "ERROR: file menu dari repository tidak valid."; exit 1; }
 # Download ganti_domain sebagai file terpisah dari repository.
-wget -qO /usr/bin/ganti_domain "$sfile/ganti_domain" && chmod 755 /usr/bin/ganti_domain
-test -s /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain kosong/gagal di-download."; exit 1; }
+download_required "$sfile/ganti_domain" "/usr/bin/ganti_domain" "command ganti_domain" && chmod 755 /usr/bin/ganti_domain
 test -s /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain kosong/gagal di-download."; exit 1; }
 bash -n /usr/bin/ganti_domain || { echo "ERROR: file ganti_domain dari repository tidak valid."; exit 1; }
-wget -O ceklogin "$sfile/ceklogin" && chmod +x ceklogin
-wget -O hapus "$sfile/hapus" && chmod +x hapus
-wget -O renew "$sfile/renew" && chmod +x renew
-wget -O resetusage "$sfile/resetusage" && chmod +x resetusage
-wget -O buat_token "$sfile/buat_token" && chmod +x buat_token
-wget -O cekservice "$sfile/cekservice" && chmod +x cekservice
-wget -O ram "$sfile/ram" && chmod +x ram
-wget -O menu-backup "$sfile/menu-backup" && chmod +x menu-backup
-wget -O menu-reboot "$sfile/menu-reboot" && chmod +x menu-reboot
-wget -O menu-akun "$sfile/menu-akun" && chmod +x menu-akun
-wget -O backup "$sfile/backup" && chmod +x backup
-wget -O clearlog "$sfile/clearlog" && chmod +x clearlog
+download_required "$sfile/ceklogin" "/usr/bin/ceklogin" "command ceklogin" && chmod +x "/usr/bin/ceklogin"
+download_required "$sfile/hapus" "/usr/bin/hapus" "command hapus" && chmod +x "/usr/bin/hapus"
+download_required "$sfile/renew" "/usr/bin/renew" "command renew" && chmod +x "/usr/bin/renew"
+download_required "$sfile/resetusage" "/usr/bin/resetusage" "command resetusage" && chmod +x "/usr/bin/resetusage"
+download_required "$sfile/buat_token" "/usr/bin/buat_token" "command buat_token" && chmod +x "/usr/bin/buat_token"
+download_required "$sfile/cekservice" "/usr/bin/cekservice" "command cekservice" && chmod +x "/usr/bin/cekservice"
+download_required "$sfile/ram" "/usr/bin/ram" "command ram" && chmod +x "/usr/bin/ram"
+download_required "$sfile/menu-backup" "/usr/bin/menu-backup" "command menu-backup" && chmod +x "/usr/bin/menu-backup"
+download_required "$sfile/menu-reboot" "/usr/bin/menu-reboot" "command menu-reboot" && chmod +x "/usr/bin/menu-reboot"
+download_required "$sfile/menu-akun" "/usr/bin/menu-akun" "command menu-akun" && chmod +x "/usr/bin/menu-akun"
+download_required "$sfile/backup" "/usr/bin/backup" "command backup" && chmod +x "/usr/bin/backup"
+download_required "$sfile/clearlog" "/usr/bin/clearlog" "command clearlog" && chmod +x "/usr/bin/clearlog"
 # Jalankan clearlog otomatis setiap hari pukul 02:00 WIB.
 cat > /etc/cron.d/clearlog_otomatis <<'EOF'
 00 2 * * * root /usr/bin/clearlog >/dev/null 2>&1
 EOF
 chmod 644 /etc/cron.d/clearlog_otomatis
 systemctl restart cron 2>/dev/null || true
-wget -O ceklog "$sfile/ceklog" && chmod +x ceklog
-wget -O cekerror "$sfile/cekerror" && chmod +x cekerror
-wget -O ceknginx "$sfile/ceknginx" && chmod +x ceknginx
-wget -O expired "$sfile/expired" && chmod +x expired
-wget -O setlimit "$sfile/setlimit" && chmod +x setlimit
-wget -O autokill "$sfile/autokill" && chmod +x autokill
+download_required "$sfile/ceklog" "/usr/bin/ceklog" "command ceklog" && chmod +x "/usr/bin/ceklog"
+download_required "$sfile/cekerror" "/usr/bin/cekerror" "command cekerror" && chmod +x "/usr/bin/cekerror"
+download_required "$sfile/ceknginx" "/usr/bin/ceknginx" "command ceknginx" && chmod +x "/usr/bin/ceknginx"
+download_required "$sfile/expired" "/usr/bin/expired" "command expired" && chmod +x "/usr/bin/expired"
+download_required "$sfile/setlimit" "/usr/bin/setlimit" "command setlimit" && chmod +x "/usr/bin/setlimit"
+download_required "$sfile/autokill" "/usr/bin/autokill" "command autokill" && chmod +x "/usr/bin/autokill"
 
 # =========================================================
 # Install BWBOT - bandwidth monitor Telegram
@@ -816,14 +851,14 @@ chmod 644 /etc/cron.d/bwbot
 systemctl enable --now cron 2>/dev/null || systemctl enable --now crond 2>/dev/null || true
 
 log "BWBOT terpasang: /usr/local/bin/bwbot; cron setiap hari 02:00."
-wget -O fix-ssl "$sfile/fix-ssl.sh" && chmod +x fix-ssl
-wget -O ganticore "$sfile/ganticore" && chmod +x ganticore
-wget -O routing "$sfile/routing" && chmod +x routing
-wget -O seeroute "$sfile/seeroute" && chmod +x seeroute
+download_required "$sfile/fix-ssl.sh" "/usr/bin/fix-ssl" "command fix-ssl" && chmod +x /usr/bin/fix-ssl
+download_required "$sfile/ganticore" "/usr/bin/ganticore" "command ganticore" && chmod +x "/usr/bin/ganticore"
+download_required "$sfile/routing" "/usr/bin/routing" "command routing" && chmod +x "/usr/bin/routing"
+download_required "$sfile/seeroute" "/usr/bin/seeroute" "command seeroute" && chmod +x "/usr/bin/seeroute"
 cd
 
 #Install reboot dan expired otomatis
-wget -O /usr/bin/reboot_otomatis "$sfile/reboot_otomatis.sh";
+download_required "$sfile/reboot_otomatis.sh" "/usr/bin/reboot_otomatis" "reboot otomatis";
 chmod +x /usr/bin/reboot_otomatis;
 cat > /etc/cron.d/expired_otomatis <<'EOF'
 00 1 * * * root /usr/bin/expired >/dev/null 2>&1
@@ -1041,14 +1076,19 @@ systemctl start ufw
 
 stage08() {
     set -e
-#install database
-wget -O /var/lib/marzban/db.sqlite3 "$sfile/db.sqlite3"
+# Jangan overwrite database hasil bootstrap/migration dengan database repository.
+if [ -f /var/lib/marzban/db.sqlite3 ]; then
+    chmod 600 /var/lib/marzban/db.sqlite3 || true
+    colorized_echo green "[✓] Database Marzban dipertahankan."
+fi
 
-#install warp
-wget -O /root/warp "https://raw.githubusercontent.com/hamid-gh98/x-ui-scripts/main/install_warp_proxy.sh"
-sudo chmod +x /root/warp
-sudo bash /root/warp -y
-rm /root/warp
+# WARP opsional: kegagalan WARP tidak boleh menghentikan Marzban/CloudFront.
+download_optional "https://raw.githubusercontent.com/hamid-gh98/x-ui-scripts/main/install_warp_proxy.sh" "/root/warp" "installer WARP"
+if [ -s /root/warp ]; then
+    chmod +x /root/warp
+    bash /root/warp -y || colorized_echo yellow "[!] WARP gagal dipasang; instalasi tetap dilanjutkan."
+    rm -f /root/warp
+fi
 
 #finishing
 apt autoremove -y
@@ -1101,19 +1141,30 @@ sed -i \
     -e '\#/etc/localtime#d' \
     /opt/marzban/docker-compose.yml
 
-# Pastikan image panel dan migration berasal dari upstream Marzban yang sama.
-# Ini mencegah compose custom lama menjalankan kode baru dengan schema lama.
+# Pastikan image panel tetap pada versi yang dipin.
 if grep -qE 'image:[[:space:]]*gozargah/marzban:' /opt/marzban/docker-compose.yml; then
-    sed -i -E 's#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\1latest#' /opt/marzban/docker-compose.yml
+    sed -i -E "s#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\\1${MARZBAN_VERSION}#" /opt/marzban/docker-compose.yml
 fi
 
 # Migration tanpa membuat backup database otomatis sebelum migration.
 DB_BACKUP=""
 
 # Set kredensial sementara untuk import admin.
-sed -i "s/# SUDO_USERNAME = \"admin\"/SUDO_USERNAME = \"${userpanel}\"/" /opt/marzban/.env
-sed -i "s/# SUDO_PASSWORD = \"admin\"/SUDO_PASSWORD = \"${passpanel}\"/" /opt/marzban/.env
-sed -i "s/UVICORN_PORT = 7879/UVICORN_PORT = ${port}/" /opt/marzban/.env
+if grep -qE '^[[:space:]]*SUDO_USERNAME[[:space:]]*=' /opt/marzban/.env; then
+    sed -i -E "s#^[[:space:]]*SUDO_USERNAME[[:space:]]*=.*#SUDO_USERNAME = \"${userpanel}\"#" /opt/marzban/.env
+else
+    printf '\nSUDO_USERNAME = "%s"\n' "$userpanel" >> /opt/marzban/.env
+fi
+if grep -qE '^[[:space:]]*SUDO_PASSWORD[[:space:]]*=' /opt/marzban/.env; then
+    sed -i -E "s#^[[:space:]]*SUDO_PASSWORD[[:space:]]*=.*#SUDO_PASSWORD = \"${passpanel}\"#" /opt/marzban/.env
+else
+    printf 'SUDO_PASSWORD = "%s"\n' "$passpanel" >> /opt/marzban/.env
+fi
+if grep -qE '^[[:space:]]*UVICORN_PORT[[:space:]]*=' /opt/marzban/.env; then
+    sed -i -E "s#^[[:space:]]*UVICORN_PORT[[:space:]]*=.*#UVICORN_PORT = ${port}#" /opt/marzban/.env
+else
+    printf 'UVICORN_PORT = %s\n' "$port" >> /opt/marzban/.env
+fi
 
 if docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD="docker compose"
@@ -1126,7 +1177,7 @@ fi
 
 # Pastikan image Marzban v0.8.4 tersedia sebelum migration.
 # Pull langsung dibuat eksplisit agar kegagalan tidak tersembunyi.
-MARZBAN_IMAGE="gozargah/marzban:latest"
+MARZBAN_IMAGE="gozargah/marzban:${MARZBAN_VERSION}"
 colorized_echo cyan "Mengambil image ${MARZBAN_IMAGE}..."
 if ! docker pull "${MARZBAN_IMAGE}" >> /var/log/marzban-bootstrap.log 2>&1; then
     colorized_echo red "Gagal mengambil image Marzban ${MARZBAN_IMAGE}."
@@ -1136,7 +1187,7 @@ if ! docker pull "${MARZBAN_IMAGE}" >> /var/log/marzban-bootstrap.log 2>&1; then
 fi
 
 # Pastikan compose menunjuk ke image yang benar-benar tersedia.
-sed -i -E 's#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\1latest#' /opt/marzban/docker-compose.yml
+sed -i -E "s#(image:[[:space:]]*gozargah/marzban:)[^[:space:]]+#\\1${MARZBAN_VERSION}#" /opt/marzban/docker-compose.yml
 
 # Jalankan Alembic SEBELUM panel dijalankan.
 # Dengan demikian query admin baru tidak dieksekusi pada schema lama.
@@ -1203,7 +1254,8 @@ else:
     print("ADMIN_CLI_ALREADY_COMPATIBLE_OR_PATTERN_CHANGED")
 PY
 
-    if ! marzban cli admin import-from-env -y; then
+    MARZBAN_CLI="$(command -v marzban 2>/dev/null || printf /usr/local/bin/marzban)"
+    if ! "$MARZBAN_CLI" cli admin import-from-env -y; then
         colorized_echo red "Import admin gagal."
         $COMPOSE_CMD logs --tail=80 marzban || true
         return 1
@@ -1221,6 +1273,18 @@ sed -i "s/SUDO_USERNAME = \"${userpanel}\"/# SUDO_USERNAME = \"admin\"/" /opt/ma
 sed -i "s/SUDO_PASSWORD = \"${passpanel}\"/# SUDO_PASSWORD = \"admin\"/" /opt/marzban/.env
 
 $COMPOSE_CMD up -d --remove-orphans
+
+# Verifikasi final: container Marzban benar-benar menggunakan main Xray pinned.
+# Jangan lanjut jika runtime masih menunjuk ke core lain.
+MAIN_XRAY_VERSION="$($COMPOSE_CMD exec -T marzban /var/lib/marzban/xray-core/xray version 2>/dev/null | head -n 1 || true)"
+if ! printf '%s\n' "$MAIN_XRAY_VERSION" | grep -q 'Xray 26.9.9'; then
+    colorized_echo red "Runtime Marzban tidak memakai Xray 26.9.9."
+    echo "Hasil: ${MAIN_XRAY_VERSION}"
+    echo "XRAY_EXECUTABLE_PATH:"
+    grep -E '^XRAY_EXECUTABLE_PATH[[:space:]]*=' /opt/marzban/.env || true
+    return 1
+fi
+colorized_echo green "[✓] Runtime Marzban terverifikasi memakai Xray 26.9.9."
 cd
 echo "Marzban siap; melanjutkan ke pembuatan token API."
 
@@ -1287,8 +1351,8 @@ stage10() {
             break
         fi
 
-        # Pastikan container tetap hidup sambil menunggu.
-        if ! docker inspect -f '{{.State.Running}}' marzban-marzban-1 2>/dev/null | grep -q true; then
+        # Pastikan service tetap hidup sambil menunggu; jangan bergantung pada nama container.
+        if ! $COMPOSE_CMD -f /opt/marzban/docker-compose.yml ps --status running marzban 2>/dev/null | grep -q marzban; then
             $COMPOSE_CMD -f /opt/marzban/docker-compose.yml up -d marzban >/dev/null 2>&1 || true
         fi
         sleep 2
@@ -1372,8 +1436,295 @@ stage10() {
     echo "password  : ${passpanel}" | tee -a /root/log-install.txt
     echo "-=================================-" | tee -a /root/log-install.txt
     echo "Script telah berhasil di install" | tee -a /root/log-install.txt
-    marzban cli admin delete -u admin -y || log "WARN: cleanup admin dilewati (exit=$?)"
+    if command -v marzban >/dev/null 2>&1 || [ -x /usr/local/bin/marzban ]; then
+        MARZBAN_CLI="$(command -v marzban 2>/dev/null || printf /usr/local/bin/marzban)"
+        "$MARZBAN_CLI" cli admin delete -u admin -y || log "WARN: cleanup admin dilewati (exit=$?)"
+    fi
 }
+
+# =========================================================
+# STAGE 11 - CLOUDFRONT XRAY (SEPARATE CORE)
+# =========================================================
+stage11() {
+    set -e
+    if docker compose version >/dev/null 2>&1; then
+        COMPOSE_CMD="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE_CMD="docker-compose"
+    else
+        colorized_echo red "Docker Compose tidak ditemukan."
+        return 1
+    fi
+    cd /opt/marzban
+
+    local CF_VERSION="${XRAY_PINNED_VERSION}"
+    if [ -f /etc/marzban-xray-versions.conf ]; then
+        . /etc/marzban-xray-versions.conf
+        CF_VERSION="${XRAY_CLOUDFRONT_VERSION:-v26.9.9}"
+    fi
+    local CF_DIR="/var/lib/marzban/cloudfront"
+    local CF_BIN="${CF_DIR}/xray"
+    local CF_CFG="${CF_DIR}/config.json"
+    local CF_SCRIPT="/usr/local/bin/cloudfront-xray"
+    local CF_SYNC="/usr/local/bin/cloudfront-xray-update"
+    local CF_SERVICE="/etc/systemd/system/xray-cloudfront.service"
+    local CF_SYNC_SERVICE="/etc/systemd/system/marzban-cloudfront-sync.service"
+    local CF_TIMER="/etc/systemd/system/marzban-cloudfront-sync.timer"
+    local NGX="/opt/marzban/xray.conf"
+
+    mkdir -p "$CF_DIR" /etc/systemd/system
+
+    case "$(uname -m)" in
+        x86_64) CF_ASSET="Xray-linux-64.zip" ;;
+        aarch64|arm64) CF_ASSET="Xray-linux-arm64-v8a.zip" ;;
+        *) colorized_echo red "Arsitektur CloudFront tidak didukung: $(uname -m)"; return 1 ;;
+    esac
+
+    rm -rf /tmp/xray-cloudfront-install
+    mkdir -p /tmp/xray-cloudfront-install
+    curl -fL --retry 5 --retry-delay 2 \
+        -o /tmp/xray-cloudfront-install/xray.zip \
+        "https://github.com/XTLS/Xray-core/releases/download/${CF_VERSION}/${CF_ASSET}"
+    unzip -oq /tmp/xray-cloudfront-install/xray.zip xray -d /tmp/xray-cloudfront-install
+    install -m 755 /tmp/xray-cloudfront-install/xray "$CF_BIN"
+    rm -rf /tmp/xray-cloudfront-install
+
+    if ! "$CF_BIN" version 2>/dev/null | grep -q "Xray ${CF_VERSION#v}"; then
+        colorized_echo red "CloudFront Xray bukan ${CF_VERSION}."
+        "$CF_BIN" version || true
+        return 1
+    fi
+
+    cp -a "$NGX" "/root/xray.conf.before-cloudfront-v3.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    python3 - "$NGX" <<'PYNGX'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1])
+s=p.read_text()
+block="""
+
+# CloudFront WebSocket -> separate Xray core
+location = /vmess-cloudfront {
+    proxy_pass http://127.0.0.1:10010;
+    proxy_http_version 1.1;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $http_host;
+    proxy_read_timeout 86400;
+    proxy_send_timeout 86400;
+    proxy_buffering off;
+}
+
+location = /vless-cloudfront {
+    proxy_pass http://127.0.0.1:10011;
+    proxy_http_version 1.1;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $http_host;
+    proxy_read_timeout 86400;
+    proxy_send_timeout 86400;
+    proxy_buffering off;
+}
+
+location = /trojan-cloudfront {
+    proxy_pass http://127.0.0.1:10012;
+    proxy_http_version 1.1;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $http_host;
+    proxy_read_timeout 86400;
+    proxy_send_timeout 86400;
+    proxy_buffering off;
+}
+"""
+if '/vmess-cloudfront' not in s:
+    needle='root /var/www/html;'
+    if needle not in s: raise SystemExit('root /var/www/html; tidak ditemukan')
+    s=s.replace(needle, needle+block, 1)
+p.write_text(s)
+PYNGX
+
+    cat > "$CF_SCRIPT" <<'EOFCFGEN'
+#!/usr/bin/env bash
+set -euo pipefail
+CF_DIR=/var/lib/marzban/cloudfront
+CF_CFG="$CF_DIR/config.json"
+DB=/var/lib/marzban/db.sqlite3
+LOCK=/run/cloudfront-xray-sync.lock
+exec 9>"$LOCK"
+flock -n 9 || exit 0
+python3 - "$DB" "$CF_CFG.tmp" <<'PYCF'
+import json, sqlite3, sys
+from datetime import datetime, timezone
+
+db,out=sys.argv[1:]
+con=sqlite3.connect(db); con.row_factory=sqlite3.Row
+users={dict(r).get('id'):dict(r) for r in con.execute('SELECT * FROM users')}
+clients={'vmess':[],'vless':[],'trojan':[]}
+now=int(datetime.now(timezone.utc).timestamp())
+for rr in con.execute('SELECT * FROM proxies'):
+    p=dict(rr); u=users.get(p.get('user_id'))
+    if not u: continue
+    if str(u.get('status','active')).lower() not in ('active','limited','on_hold'): continue
+    exp=u.get('expire')
+    try:
+        if exp and int(exp)>0 and int(exp)<now*1000: continue
+    except Exception: pass
+    typ=str(p.get('type','')).lower(); raw=p.get('settings')
+    if typ not in clients or not raw: continue
+    try: st=json.loads(raw) if isinstance(raw,str) else raw
+    except Exception: continue
+    name=str(u.get('username') or '')
+    if typ in ('vmess','vless'):
+        uid=st.get('id') or st.get('uuid')
+        if uid:
+            x={'id':uid,'email':name}
+            if typ=='vmess': x['alterId']=0
+            clients[typ].append(x)
+    elif typ=='trojan' and st.get('password'):
+        clients[typ].append({'password':st['password'],'email':name})
+cfg={
+ 'log':{'loglevel':'warning'},
+ 'api':{'tag':'api-cf','services':['HandlerService','LoggerService','StatsService']},
+ 'stats':{},
+ 'policy':{'levels':{'0':{'statsUserUplink':True,'statsUserDownlink':True}}},
+ 'inbounds':[
+  {'tag':'api-cf','listen':'127.0.0.1','port':10085,'protocol':'dokodemo-door','settings':{'address':'127.0.0.1'}},
+  {'tag':'VMESS_CLOUDFRONT','listen':'127.0.0.1','port':10010,'protocol':'vmess','settings':{'clients':clients['vmess']},'streamSettings':{'network':'ws','wsSettings':{'path':'/vmess-cloudfront'}}},
+  {'tag':'VLESS_CLOUDFRONT','listen':'127.0.0.1','port':10011,'protocol':'vless','settings':{'clients':clients['vless'],'decryption':'none'},'streamSettings':{'network':'ws','wsSettings':{'path':'/vless-cloudfront'}}},
+  {'tag':'TROJAN_CLOUDFRONT','listen':'127.0.0.1','port':10012,'protocol':'trojan','settings':{'clients':clients['trojan']},'streamSettings':{'network':'ws','wsSettings':{'path':'/trojan-cloudfront'}}}
+ ],
+ 'outbounds':[{'protocol':'freedom','tag':'direct'},{'protocol':'blackhole','tag':'blocked'}],
+ 'routing':{'rules':[]}
+}
+open(out,'w').write(json.dumps(cfg,indent=2))
+PYCF
+mv -f "$CF_CFG.tmp" "$CF_CFG"
+EOFCFGEN
+    chmod 755 "$CF_SCRIPT"
+    "$CF_SCRIPT"
+    "$CF_BIN" run -test -config "$CF_CFG"
+
+    cat > "$CF_SERVICE" <<EOFCS
+[Unit]
+Description=CloudFront Xray Core (separate from Marzban)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$CF_BIN run -config $CF_CFG
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOFCS
+
+    cat > "$CF_SYNC" <<'EOFSYNC'
+#!/usr/bin/env bash
+set -euo pipefail
+CF_DIR=/var/lib/marzban/cloudfront
+DB=/var/lib/marzban/db.sqlite3
+CF_CFG="$CF_DIR/config.json"
+LOCK=/run/cloudfront-xray-sync.lock
+exec 9>"$LOCK"
+flock -n 9 || exit 0
+[ -f "$DB" ] && [ -x "$CF_DIR/xray" ] || exit 0
+python3 - "$DB" "$CF_CFG.new.json" <<'PYCFSYNC'
+import json, sqlite3, sys
+from datetime import datetime, timezone
+
+db,out=sys.argv[1:]
+con=sqlite3.connect(db); con.row_factory=sqlite3.Row
+users={dict(r).get('id'):dict(r) for r in con.execute('SELECT * FROM users')}
+clients={'vmess':[],'vless':[],'trojan':[]}; now=int(datetime.now(timezone.utc).timestamp())
+for rr in con.execute('SELECT * FROM proxies'):
+    p=dict(rr); u=users.get(p.get('user_id'))
+    if not u or str(u.get('status','active')).lower() not in ('active','limited','on_hold'): continue
+    exp=u.get('expire')
+    try:
+        if exp and int(exp)>0 and int(exp)<now*1000: continue
+    except Exception: pass
+    typ=str(p.get('type','')).lower(); raw=p.get('settings')
+    if typ not in clients or not raw: continue
+    try: st=json.loads(raw) if isinstance(raw,str) else raw
+    except Exception: continue
+    name=str(u.get('username') or '')
+    if typ in ('vmess','vless') and (uid:=st.get('id') or st.get('uuid')):
+        x={'id':uid,'email':name};
+        if typ=='vmess': x['alterId']=0
+        clients[typ].append(x)
+    elif typ=='trojan' and st.get('password'):
+        clients[typ].append({'password':st['password'],'email':name})
+cfg={'log':{'loglevel':'warning'},'api':{'tag':'api-cf','services':['HandlerService','LoggerService','StatsService']},'stats':{},'policy':{'levels':{'0':{'statsUserUplink':True,'statsUserDownlink':True}}},'inbounds':[
+ {'tag':'api-cf','listen':'127.0.0.1','port':10085,'protocol':'dokodemo-door','settings':{'address':'127.0.0.1'}},
+ {'tag':'VMESS_CLOUDFRONT','listen':'127.0.0.1','port':10010,'protocol':'vmess','settings':{'clients':clients['vmess']},'streamSettings':{'network':'ws','wsSettings':{'path':'/vmess-cloudfront'}}},
+ {'tag':'VLESS_CLOUDFRONT','listen':'127.0.0.1','port':10011,'protocol':'vless','settings':{'clients':clients['vless'],'decryption':'none'},'streamSettings':{'network':'ws','wsSettings':{'path':'/vless-cloudfront'}}},
+ {'tag':'TROJAN_CLOUDFRONT','listen':'127.0.0.1','port':10012,'protocol':'trojan','settings':{'clients':clients['trojan']},'streamSettings':{'network':'ws','wsSettings':{'path':'/trojan-cloudfront'}}}],
+'outbounds':[{'protocol':'freedom','tag':'direct'},{'protocol':'blackhole','tag':'blocked'}],'routing':{'rules':[]}}
+open(out,'w').write(json.dumps(cfg,sort_keys=True,indent=2))
+PYCFSYNC
+if ! cmp -s "$CF_CFG.new.json" "$CF_CFG"; then
+    "$CF_DIR/xray" run -test -config "$CF_CFG.new.json"
+    mv -f "$CF_CFG.new.json" "$CF_CFG"
+    systemctl restart xray-cloudfront.service
+else
+    rm -f "$CF_CFG.new.json"
+fi
+EOFSYNC
+    chmod 755 "$CF_SYNC"
+
+    cat > "$CF_SYNC_SERVICE" <<EOFSS
+[Unit]
+Description=Sync Marzban users to CloudFront Xray
+After=docker.service xray-cloudfront.service
+
+[Service]
+Type=oneshot
+ExecStart=$CF_SYNC
+EOFSS
+
+    cat > "$CF_TIMER" <<EOFT
+[Unit]
+Description=Periodic Marzban to CloudFront Xray sync
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOFT
+
+    $COMPOSE_CMD -f /opt/marzban/docker-compose.yml config --quiet
+    $COMPOSE_CMD -f /opt/marzban/docker-compose.yml up -d --force-recreate nginx
+    $COMPOSE_CMD -f /opt/marzban/docker-compose.yml exec -T nginx nginx -t
+
+    systemctl daemon-reload
+    systemctl enable --now xray-cloudfront.service
+    systemctl enable --now marzban-cloudfront-sync.timer
+    "$CF_SYNC"
+
+    colorized_echo green "[✓] Main Xray:"
+    /var/lib/marzban/xray-core/xray version | head -n 2
+    colorized_echo green "[✓] CloudFront Xray:"
+    "$CF_BIN" version | head -n 2
+    colorized_echo green "[✓] CloudFront listener:"
+    ss -ltnp 2>/dev/null | grep -E ':10010|:10011|:10012|:10085' || true
+    colorized_echo green "[✓] CloudFront Xray + Nginx route + auto-sync terpasang."
+    colorized_echo yellow "CloudFront AWS tetap memakai origin HTTPS domain VPS dan viewer domain CloudFront."
+}
+
 
 # =========================================================
 # REBUILD VPS
@@ -1394,23 +1745,147 @@ install_rebuild() {
         }
     fi
 
-    if curl -4fsSL --retry 3 --connect-timeout 15 --max-time 120 \
-        "$url" -o "$tmp"; then
-        if [ -s "$tmp" ] && bash -n "$tmp" >/dev/null 2>&1; then
-            chmod 755 "$tmp"
-            mv -f "$tmp" "$target"
-            colorized_echo green "[✓] Rebuild VPS terpasang: $target"
-        else
-            rm -f "$tmp"
-            colorized_echo yellow "[!] File Rebuild tidak valid. Instalasi dilanjutkan."
-        fi
+    download_optional "$url" "$tmp" "Rebuild VPS"
+    if [ -s "$tmp" ] && bash -n "$tmp" >/dev/null 2>&1; then
+        chmod 755 "$tmp"
+        mv -f "$tmp" "$target"
+        colorized_echo green "[✓] Rebuild VPS terpasang: $target"
     else
         rm -f "$tmp"
-        colorized_echo yellow "[!] Gagal mengambil Rebuild. Instalasi dilanjutkan."
+        colorized_echo yellow "[!] Rebuild VPS tidak tersedia/valid. Instalasi dilanjutkan."
     fi
 }
 
-install_rebuild
+# =========================================================
+# STAGE 12 - XRAY MAIN VERSION MANAGER
+# =========================================================
+stage12() {
+    set -e
+    local VERSION_FILE="/etc/marzban-xray-versions.conf"
+    local MAIN_DIR="/var/lib/marzban/xray-core"
+    local MAIN_BIN="${MAIN_DIR}/xray"
+    local BACKUP_DIR="${MAIN_DIR}/backups"
+    local COMPOSE="/opt/marzban/docker-compose.yml"
+    local CF_BIN="/var/lib/marzban/cloudfront/xray"
+    if docker compose version >/dev/null 2>&1; then
+        COMPOSE_CMD="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE_CMD="docker-compose"
+    else
+        colorized_echo red "Docker Compose tidak ditemukan."
+        return 1
+    fi
+    mkdir -p "$BACKUP_DIR"
+    cat > "$VERSION_FILE" <<EOFVER
+XRAY_MAIN_VERSION="${XRAY_PINNED_VERSION}"
+XRAY_CLOUDFRONT_VERSION="${XRAY_PINNED_VERSION}"
+EOFVER
+    chmod 644 "$VERSION_FILE"
+
+    cat > /usr/local/bin/xray-main-update <<'EOFXUP'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+VERSION_FILE=/etc/marzban-xray-versions.conf
+MAIN_DIR=/var/lib/marzban/xray-core
+MAIN_BIN=$MAIN_DIR/xray
+BACKUP_DIR=$MAIN_DIR/backups
+COMPOSE=/opt/marzban/docker-compose.yml
+ENV_FILE=/opt/marzban/.env
+XCFG=/var/lib/marzban/xray_config.json
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64) ASSET=Xray-linux-64.zip ;;
+  aarch64|arm64) ASSET=Xray-linux-arm64-v8a.zip ;;
+  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+usage(){ echo "Usage: xray-main-update status | update v26.10.x | rollback"; }
+current(){ "$MAIN_BIN" version 2>/dev/null | head -n1 || true; }
+status(){
+  echo "Desired : $(grep -E '^XRAY_MAIN_VERSION=' "$VERSION_FILE" 2>/dev/null | head -n1 || echo unknown)"
+  echo "Active  : $(current)"
+  echo "CloudFront: $(/var/lib/marzban/cloudfront/xray version 2>/dev/null | head -n1 || echo not-installed)"
+}
+backup(){
+  local v stamp dest
+  v=$(current | sed 's/[^0-9.]//g'); stamp=$(date +%Y%m%d-%H%M%S)
+  dest="$BACKUP_DIR/xray-${v:-unknown}-${stamp}"
+  cp -a "$MAIN_BIN" "$dest"; echo "$dest"
+}
+update(){
+  local requested="$1" tmp url newver backup_path cfver runtime
+  [[ "$requested" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version harus seperti v26.10.1" >&2; exit 2; }
+  requested="v${requested#v}"
+  tmp=$(mktemp -d /tmp/xray-main-update.XXXXXX)
+  trap 'rm -rf "$tmp"' RETURN
+  url="https://github.com/XTLS/Xray-core/releases/download/${requested}/${ASSET}"
+  curl -fL --retry 5 --retry-delay 2 -o "$tmp/xray.zip" "$url"
+  unzip -oq "$tmp/xray.zip" xray -d "$tmp"
+  chmod 755 "$tmp/xray"
+  newver=$("$tmp/xray" version 2>/dev/null | head -n1)
+  grep -q "Xray ${requested#v}" <<<"$newver" || { echo "Version binary tidak sesuai: $newver" >&2; exit 1; }
+  [[ ! -f "$XCFG" ]] || "$tmp/xray" run -test -config "$XCFG"
+  backup_path=$(backup)
+  cfver=$(grep -E '^XRAY_CLOUDFRONT_VERSION=' "$VERSION_FILE" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"' | tr -d "\'" || true)
+  cfver=${cfver:-v26.9.9}
+  install -m 755 "$tmp/xray" "$MAIN_BIN"
+  { printf 'XRAY_MAIN_VERSION="%s"\n' "$requested"; printf 'XRAY_CLOUDFRONT_VERSION="%s"\n' "$cfver"; } > "$VERSION_FILE.tmp"
+  mv -f "$VERSION_FILE.tmp" "$VERSION_FILE"
+  sed -i -E 's#^[[:space:]]*XRAY_EXECUTABLE_PATH[[:space:]]*=.*#XRAY_EXECUTABLE_PATH = "/var/lib/marzban/xray-core/xray"#' "$ENV_FILE" 2>/dev/null || true
+  cd /opt/marzban
+  docker compose config --quiet
+  docker compose up -d --no-deps --force-recreate marzban
+  sleep 3
+  runtime=$(docker compose exec -T marzban /var/lib/marzban/xray-core/xray version 2>/dev/null | head -n1 || true)
+  if ! grep -q "Xray ${requested#v}" <<<"$runtime"; then
+    echo "Runtime verification FAILED; rollback otomatis." >&2
+    install -m 755 "$backup_path" "$MAIN_BIN"
+    docker compose up -d --no-deps --force-recreate marzban
+    exit 1
+  fi
+  echo "SUCCESS: $runtime"; echo "Backup: $backup_path"
+}
+rollback(){
+  local backup_path runtime
+  backup_path=$(ls -1t "$BACKUP_DIR"/xray-* 2>/dev/null | head -n1 || true)
+  [[ -n "$backup_path" && -f "$backup_path" ]] || { echo "No Xray backup found." >&2; exit 1; }
+  [[ ! -f "$XCFG" ]] || "$backup_path" run -test -config "$XCFG"
+  install -m 755 "$backup_path" "$MAIN_BIN"
+  cd /opt/marzban
+  docker compose up -d --no-deps --force-recreate marzban
+  sleep 3
+  runtime=$(docker compose exec -T marzban /var/lib/marzban/xray-core/xray version 2>/dev/null | head -n1 || true)
+  echo "Rollback runtime: $runtime"
+  grep -q 'Xray ' <<<"$runtime"
+  rollback_ver=$(printf '%s\n' "$runtime" | sed -n 's/.*Xray \([0-9][0-9.]*\).*/\1/p' | head -n1)
+  if [[ -n "$rollback_ver" ]]; then
+    cfver=$(grep -E '^XRAY_CLOUDFRONT_VERSION=' "$VERSION_FILE" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)
+    cfver=${cfver:-v26.9.9}
+    { printf 'XRAY_MAIN_VERSION="v%s"\n' "$rollback_ver"; printf 'XRAY_CLOUDFRONT_VERSION="%s"\n' "$cfver"; } > "$VERSION_FILE.tmp"
+    mv -f "$VERSION_FILE.tmp" "$VERSION_FILE"
+  fi
+}
+case "${1:-status}" in
+ status) status;;
+ update) [[ -n "${2:-}" ]] || { usage; exit 2; }; update "$2";;
+ rollback) rollback;;
+ *) usage; exit 2;;
+esac
+EOFXUP
+    chmod 755 /usr/local/bin/xray-main-update
+    cat > /usr/local/bin/xray-version <<'EOFXV'
+#!/usr/bin/env bash
+exec /usr/local/bin/xray-main-update status
+EOFXV
+    chmod 755 /usr/local/bin/xray-version
+    "$MAIN_BIN" version | grep -q "Xray ${XRAY_PINNED_VERSION#v}"
+    [ ! -x "$CF_BIN" ] || "$CF_BIN" version | grep -q "Xray ${XRAY_PINNED_VERSION#v}"
+    $COMPOSE_CMD -f "$COMPOSE" config --quiet
+    colorized_echo green "[✓] Xray version manager terpasang."
+    colorized_echo cyan "Main Xray : v26.9.9"
+    colorized_echo cyan "CloudFront: v26.9.9"
+    colorized_echo yellow "Upgrade: xray-main-update update v26.10.x"
+    colorized_echo yellow "Rollback: xray-main-update rollback"
+}
 
 run_stage 01 "Validasi OS + input konfigurasi" stage01
 run_stage 02 "Persiapan VPS + paket" stage02
@@ -1422,10 +1897,15 @@ run_stage 07 "Firewall + Fail2ban" stage07
 run_stage 08 "Database + WARP" stage08
 run_stage 09 "Migration database + Admin Marzban" stage09
 run_stage 10 "Token API + finalisasi" stage10
+run_stage 11 "CloudFront Xray + Nginx WebSocket + auto-sync user" stage11
+run_stage 12 "Xray Main version manager + backup + rollback" stage12
+
+# Rebuild dipasang setelah semua dependency dan seluruh stage selesai.
+install_rebuild
 
 # =========================================================
 # TELEGRAM FINAL SETUP - PALING AKHIR
-# Token + Chat ID baru diminta setelah seluruh stage 01-10 selesai.
+# Token + Chat ID baru diminta setelah seluruh stage 01-12 selesai.
 # Config yang sama dipakai BWBOT + menu-backup + BOT Usage.
 # =========================================================
 telegram_final_setup() {
@@ -1507,49 +1987,6 @@ telegram_final_setup() {
 
 telegram_final_setup
 install_bot_usage
-
-colorized_echo green "╔════════════════════════════════════════════════════╗"
-colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
-colorized_echo green "╚════════════════════════════════════════════════════╝"
-log "INSTALLATION COMPLETE"
-echo
-read -rp "Reboot sekarang? [y/N]: " answer
-if [[ "$answer" =~ ^[Yy]$ ]]; then reboot; fi
-
-# =========================================================
-# FAIQVPN CHECK_USAGE BOT
-# Telegram token/chat ID memakai /etc/data/telegram_config.conf.
-# Tidak memasang telegram-vps-menu.py / remote menu.
-# =========================================================
-
-# Aktifkan BOT Check Usage sebelum installer menawarkan reboot.
-
-colorized_echo green "╔════════════════════════════════════════════════════╗"
-colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
-colorized_echo green "╚════════════════════════════════════════════════════╝"
-log "INSTALLATION COMPLETE"
-echo
-echo "Telegram Check Usage: /cek_usage atau /cek_usage username"
-echo "Service: check-usage.service"
-echo
-read -rp "Reboot sekarang? [y/N]: " answer
-if [[ "$answer" =~ ^[Yy]$ ]]; then reboot; fi
-
-colorized_echo green "╔════════════════════════════════════════════════════╗"
-colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"
-colorized_echo green "╚════════════════════════════════════════════════════╝"
-log "INSTALLATION COMPLETE"
-echo
-read -rp "Reboot sekarang? [y/N]: " answer
-if [[ "$answer" =~ ^[Yy]$ ]]; then reboot; fi
-
-# =========================================================
-# FAIQVPN CHECK_USAGE BOT
-# Telegram token/chat ID memakai /etc/data/telegram_config.conf.
-# Tidak memasang telegram-vps-menu.py / remote menu.
-# =========================================================
-
-# Aktifkan BOT Check Usage sebelum installer menawarkan reboot.
 
 colorized_echo green "╔════════════════════════════════════════════════════╗"
 colorized_echo green "║       LINGVPN MARZBAN INSTALLATION SELESAI       ║"

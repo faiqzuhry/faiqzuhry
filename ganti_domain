@@ -115,31 +115,34 @@ fi
 
 info "Mendeteksi IP publik VPS..."
 
-PUBLIC_IP=$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null)
+# Batasi seluruh koneksi agar tidak menggantung lama.
+PUBLIC_IP=$(curl -4fsS --connect-timeout 2 --max-time 3     https://api.ipify.org 2>/dev/null || true)
 
-[ -n "$PUBLIC_IP" ] || die "Gagal mendeteksi IP publik VPS."
+if ! printf '%s' "$PUBLIC_IP" |
+    grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+    die "Gagal mendeteksi IP publik VPS (timeout 3 detik)."
+fi
 
 echo "IP VPS : $PUBLIC_IP"
 echo
 
 # ============================================================
-# DNS
+# DNS - TANPA MENUNGGU RESOLVER
 # ============================================================
 
-info "Mengecek DNS $NEW_DOMAIN ..."
+info "Mengecek DNS $NEW_DOMAIN (maks. 1-2 detik)..."
 
 DNS_IP=""
 
+# Gunakan resolver publik langsung dengan batas waktu ketat.
+# Ini menghindari system resolver yang kadang menggantung.
 if command -v dig >/dev/null 2>&1; then
-    DNS_IP=$(dig +short A "$NEW_DOMAIN" 2>/dev/null | head -n1)
+    DNS_IP=$(dig -4 @1.1.1.1 +time=1 +tries=1 +short A "$NEW_DOMAIN"         2>/dev/null |
+        awk '/^[0-9]+(\.[0-9]+){3}$/ {print; exit}' || true)
 elif command -v getent >/dev/null 2>&1; then
-    DNS_IP=$(getent ahostsv4 "$NEW_DOMAIN" 2>/dev/null |
-        awk 'NR==1 {print $1}')
-else
-    DNS_IP=$(curl -4fsS --max-time 10 \
-        "https://dns.google/resolve?name=$NEW_DOMAIN&type=A" 2>/dev/null |
-        grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' |
-        head -n1)
+    # Fallback tetap diberi timeout agar tidak bisa menggantung.
+    DNS_IP=$(timeout 2s getent ahostsv4 "$NEW_DOMAIN" 2>/dev/null |
+        awk 'NR==1 {print $1}' || true)
 fi
 
 if [ -n "$DNS_IP" ]; then
@@ -151,16 +154,11 @@ if [ -n "$DNS_IP" ]; then
         warn "DNS berbeda dengan IP VPS."
         echo "VPS : $PUBLIC_IP"
         echo "DNS : $DNS_IP"
-        echo
-
-        read -r -p "Tetap lanjut? [y/N]: " ANSWER
-        [[ "$ANSWER" =~ ^[Yy]$ ]] || die "Dibatalkan."
+        echo "Tetap lanjut; pengecekan DNS tidak akan menghentikan proses."
     fi
 else
-    warn "DNS A record belum ditemukan."
-
-    read -r -p "Tetap lanjut? [y/N]: " ANSWER
-    [[ "$ANSWER" =~ ^[Yy]$ ]] || die "Dibatalkan."
+    warn "DNS belum dapat diverifikasi dengan cepat."
+    echo "Pengecekan DNS dilewati agar tidak menunggu resolver."
 fi
 
 echo
