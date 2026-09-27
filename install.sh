@@ -77,7 +77,7 @@ Pemakaian:
   bash /root/install.sh                 # otomatis resume
   bash /root/install.sh --resume        # lanjut dari checkpoint terakhir
   bash /root/install.sh --status        # lihat status tahap
-  bash /root/install.sh --reset         # hapus checkpoint, ulang dari awal
+  bash /root/install.sh --reset         # hapus instalasi LingVPN/Marzban, lalu install ulang dari awal
 
 Checkpoint disimpan di:
   /var/lib/lingvpn-install/state/
@@ -85,6 +85,83 @@ Checkpoint disimpan di:
 Log utama:
   /root/lingvpn-install.log
 USAGE
+}
+
+reset_installation() {
+    colorized_echo yellow ""
+    colorized_echo yellow "⚠ PERINGATAN: --reset akan menghapus instalasi LingVPN/Marzban dari VPS."
+    colorized_echo yellow "   - Container Marzban dan volume Compose akan dihapus."
+    colorized_echo yellow "   - Database, konfigurasi, token, sertifikat, CloudFront Xray, BOT Usage, dan checkpoint akan dihapus."
+    colorized_echo yellow "   - Docker, UFW, vnstat, swap, dan paket sistem umum TIDAK dihapus."
+    colorized_echo yellow "   - File /root/install.sh tetap dipertahankan."
+    echo
+    read -r -p 'Ketik RESET untuk melanjutkan: ' confirm
+    if [ "$confirm" != "RESET" ]; then
+        colorized_echo yellow "Reset dibatalkan."
+        exit 0
+    fi
+
+    colorized_echo cyan "[1/7] Menghentikan service LingVPN..."
+    systemctl disable --now xray-cloudfront.service 2>/dev/null || true
+    systemctl disable --now marzban-cloudfront-sync.timer 2>/dev/null || true
+    systemctl disable --now check-usage.service 2>/dev/null || true
+
+    colorized_echo cyan "[2/7] Menghapus container/volume Marzban..."
+    if [ -f /opt/marzban/docker-compose.yml ]; then
+        if docker compose version >/dev/null 2>&1; then
+            (cd /opt/marzban && docker compose down -v --remove-orphans) || true
+        elif command -v docker-compose >/dev/null 2>&1; then
+            (cd /opt/marzban && docker-compose down -v --remove-orphans) || true
+        fi
+    fi
+
+    colorized_echo cyan "[3/7] Menghapus service/config LingVPN..."
+    rm -f \
+      /etc/systemd/system/xray-cloudfront.service \
+      /etc/systemd/system/marzban-cloudfront-sync.service \
+      /etc/systemd/system/marzban-cloudfront-sync.timer \
+      /etc/systemd/system/check-usage.service
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed 2>/dev/null || true
+
+    rm -f \
+      /usr/local/bin/cloudfront-xray \
+      /usr/local/bin/cloudfront-xray-update \
+      /usr/local/bin/xray-main-update \
+      /usr/local/bin/xray-version \
+      /usr/local/bin/bwbot \
+      /usr/local/bin/usage.py \
+      /usr/local/bin/bot_usage.json \
+      /usr/local/bin/rebuild \
+      /usr/local/bin/marzban-wrapper
+    # Hapus CLI Marzban yang dipasang installer.
+    rm -f /usr/local/bin/marzban
+
+    colorized_echo cyan "[4/7] Menghapus cron dan data installer..."
+    rm -f \
+      /etc/cron.d/clearlog_otomatis \
+      /etc/cron.d/bwbot \
+      /etc/cron.d/expired_otomatis
+    rm -rf /etc/data /var/lib/lingvpn-install
+
+    colorized_echo cyan "[5/7] Menghapus Marzban/Xray/CloudFront..."
+    rm -rf /opt/marzban \
+      /var/lib/marzban \
+      /opt/bot-usage-venv \
+      /var/log/bwbot.log \
+      /var/log/marzban-bootstrap.log
+    rm -f /etc/marzban-xray-versions.conf
+    rm -f /etc/logrotate.d/marzban
+
+    colorized_echo cyan "[6/7] Membersihkan temporary installer..."
+    rm -rf /tmp/xray-install /tmp/xray-cloudfront-install /tmp/marzban*
+    rm -f /root/lingvpn-install.log
+
+    colorized_echo cyan "[7/7] Menyiapkan state kosong untuk instalasi baru..."
+    mkdir -p "$STATE_DIR"
+    touch "$LOG_FILE"
+    log "RESET TOTAL: instalasi LingVPN/Marzban lama dihapus. Instalasi baru dimulai dari tahap 01."
+    colorized_echo green "[✓] Reset selesai. Melanjutkan instalasi dari awal..."
 }
 
 case "${1:-}" in
@@ -97,8 +174,7 @@ case "${1:-}" in
     exit 0
     ;;
   --reset)
-    rm -f "$STATE_DIR"/stage_*.done
-    log "Checkpoint di-reset. Instalasi akan dimulai dari tahap 01."
+    reset_installation
     ;;
   --resume|"") ;;
   -h|--help) usage; exit 0 ;;
@@ -1624,7 +1700,7 @@ import json, sqlite3, sys
 from datetime import datetime, timezone
 
 db,out=sys.argv[1:]
-con=sqlite3.connect(db); con.row_factory=sqlite3.Row
+con=sqlite3.connect(db, timeout=10); con.row_factory=sqlite3.Row
 users={dict(r).get('id'):dict(r) for r in con.execute('SELECT * FROM users')}
 clients={'vmess':[],'vless':[],'trojan':[]}
 now=int(datetime.now(timezone.utc).timestamp())
@@ -1634,7 +1710,7 @@ for rr in con.execute('SELECT * FROM proxies'):
     if str(u.get('status','active')).lower() not in ('active','limited','on_hold'): continue
     exp=u.get('expire')
     try:
-        if exp and int(exp)>0 and int(exp)<now*1000: continue
+        if exp and int(exp)>0 and int(exp)<now: continue
     except Exception: pass
     typ=str(p.get('type','')).lower(); raw=p.get('settings')
     if typ not in clients or not raw: continue
@@ -1703,7 +1779,7 @@ import json, sqlite3, sys
 from datetime import datetime, timezone
 
 db,out=sys.argv[1:]
-con=sqlite3.connect(db); con.row_factory=sqlite3.Row
+con=sqlite3.connect(db, timeout=10); con.row_factory=sqlite3.Row
 users={dict(r).get('id'):dict(r) for r in con.execute('SELECT * FROM users')}
 clients={'vmess':[],'vless':[],'trojan':[]}; now=int(datetime.now(timezone.utc).timestamp())
 for rr in con.execute('SELECT * FROM proxies'):
@@ -1711,7 +1787,7 @@ for rr in con.execute('SELECT * FROM proxies'):
     if not u or str(u.get('status','active')).lower() not in ('active','limited','on_hold'): continue
     exp=u.get('expire')
     try:
-        if exp and int(exp)>0 and int(exp)<now*1000: continue
+        if exp and int(exp)>0 and int(exp)<now: continue
     except Exception: pass
     typ=str(p.get('type','')).lower(); raw=p.get('settings')
     if typ not in clients or not raw: continue
