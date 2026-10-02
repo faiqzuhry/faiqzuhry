@@ -167,7 +167,7 @@ reset_installation() {
 case "${1:-}" in
   --status)
     echo "=== STATUS INSTALLASI LINGVPN ==="
-    for i in {01..12}; do
+    for i in {01..13}; do
       if [ -f "$STATE_DIR/stage_$i.done" ]; then echo "[✓] Tahap $i selesai"; else echo "[ ] Tahap $i belum selesai"; fi
     done
     echo "Log: $LOG_FILE"
@@ -189,7 +189,7 @@ run_stage(){
     fi
     echo
     colorized_echo cyan "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    colorized_echo cyan "[→] Tahap ${id}/12: ${name}"
+    colorized_echo cyan "[→] Tahap ${id}/13: ${name}"
     colorized_echo cyan "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     if "$func"; then
         touch "$STATE_DIR/stage_${id}.done"
@@ -2028,6 +2028,67 @@ EOFXV
     colorized_echo yellow "Rollback: xray-main-update rollback"
 }
 
+
+stage13() {
+    local archive="/tmp/dashboard-build.tar.gz"
+    local target="/opt/marzban/dashboard-build"
+
+    log "Installing FaiqXray Dashboard"
+
+    download_required "$sfile/dashboard-build.tar.gz" "$archive" "FaiqXray Dashboard"
+
+    tar -tzf "$archive" >/dev/null 2>&1 || {
+        colorized_echo red "[x] Archive dashboard tidak valid."
+        return 1
+    }
+
+    rm -rf "$target"
+    mkdir -p "$target"
+    tar -xzf "$archive" -C "$target"
+
+    [ -f "$target/index.html" ] || {
+        colorized_echo red "[x] index.html dashboard tidak ditemukan."
+        return 1
+    }
+
+    python3 - <<'PY2'
+from pathlib import Path
+
+p = Path("/opt/marzban/docker-compose.yml")
+s = p.read_text()
+mount = "    - /opt/marzban/dashboard-build:/code/app/dashboard/build:ro"
+needle = "    - /var/lib/marzban:/var/lib/marzban"
+
+if "/opt/marzban/dashboard-build:/code/app/dashboard/build:ro" not in s:
+    s = s.replace(needle, needle + "\n" + mount, 1)
+
+p.write_text(s)
+PY2
+
+    cd /opt/marzban || return 1
+
+    docker compose config --quiet || {
+        colorized_echo red "[x] docker-compose.yml tidak valid."
+        return 1
+    }
+
+    docker compose up -d --no-deps --force-recreate marzban || {
+        colorized_echo red "[x] Gagal recreate container Marzban."
+        return 1
+    }
+
+    sleep 3
+
+    docker compose exec -T marzban test -f /code/app/dashboard/build/index.html || {
+        colorized_echo red "[x] Dashboard FaiqXray gagal terpasang."
+        return 1
+    }
+
+    rm -f "$archive"
+
+    colorized_echo green "[✓] FaiqXray Dashboard berhasil dipasang."
+}
+
 run_stage 01 "Validasi OS + input konfigurasi" stage01
 run_stage 02 "Persiapan VPS + paket" stage02
 run_stage 03 "Bootstrap Marzban + Xray" stage03
@@ -2040,6 +2101,7 @@ run_stage 09 "Migration database + Admin Marzban" stage09
 run_stage 10 "Token API + finalisasi" stage10
 run_stage 11 "CloudFront Xray + Nginx WebSocket + auto-sync user" stage11
 run_stage 12 "Xray Main version manager + backup + rollback" stage12
+run_stage 13 "FaiqXray Dashboard" stage13
 
 # Rebuild dipasang setelah semua dependency dan seluruh stage selesai.
 install_rebuild
