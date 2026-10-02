@@ -1,1 +1,605 @@
-hayo, mau ngapain
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07111f">
+<title>{{ user.username }} • FaiqXray</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{background:#07111f}
+body{
+ margin:0;
+ min-height:100vh;
+ color:#edf4ff;
+ font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+ background:
+ radial-gradient(circle at 15% -5%,rgba(56,112,210,.25),transparent 34%),
+ radial-gradient(circle at 100% 25%,rgba(31,79,160,.16),transparent 30%),
+ #07111f;
+}
+.container{
+ width:min(100%,760px);
+ margin:auto;
+ padding:18px 14px 45px;
+}
+.top{
+ display:flex;
+ align-items:center;
+ justify-content:space-between;
+ padding:4px 3px 18px;
+}
+.brand{
+ display:flex;
+ align-items:center;
+ gap:11px;
+ font-size:20px;
+ font-weight:800;
+ letter-spacing:-.3px;
+}
+.logo{
+ width:43px;
+ height:43px;
+ display:grid;
+ place-items:center;
+ border-radius:14px;
+ background:linear-gradient(145deg,#1b3965,#10213a);
+ border:1px solid rgba(130,174,255,.15);
+ box-shadow:0 8px 25px rgba(0,0,0,.28);
+}
+.logo svg{width:28px;height:28px}
+.settings{
+ width:40px;
+ height:40px;
+ display:grid;
+ place-items:center;
+ border-radius:12px;
+ color:#9badc8;
+ background:#0e1b2e;
+ border:1px solid rgba(140,170,210,.1);
+}
+
+/* PROFILE */
+.profile{
+ position:relative;
+ overflow:hidden;
+ padding:22px;
+ border-radius:24px;
+ background:
+ linear-gradient(145deg,rgba(21,39,67,.97),rgba(12,25,43,.97));
+ border:1px solid rgba(132,171,225,.14);
+ box-shadow:0 18px 50px rgba(0,0,0,.28);
+}
+.profile:after{
+ content:"";
+ position:absolute;
+ width:180px;
+ height:180px;
+ right:-80px;
+ top:-90px;
+ border-radius:50%;
+ background:rgba(70,133,240,.12);
+ filter:blur(3px);
+}
+.profile-head{
+ position:relative;
+ z-index:1;
+ display:flex;
+ align-items:flex-start;
+ justify-content:space-between;
+ gap:15px;
+}
+.user-title{
+ font-size:27px;
+ line-height:1.1;
+ font-weight:800;
+ letter-spacing:-.7px;
+}
+.user-sub{
+ margin-top:7px;
+ color:#8295b3;
+ font-size:13px;
+}
+.status{
+ white-space:nowrap;
+ padding:7px 11px;
+ border-radius:999px;
+ color:#65e3b2;
+ background:rgba(35,126,91,.16);
+ border:1px solid rgba(78,222,167,.18);
+ font-size:11px;
+ font-weight:800;
+ text-transform:uppercase;
+ letter-spacing:.4px;
+}
+.status.off{
+ color:#ff8094;
+ background:rgba(185,52,72,.14);
+ border-color:rgba(255,92,117,.16);
+}
+.stats{
+ position:relative;
+ z-index:1;
+ display:grid;
+ grid-template-columns:1fr 1fr;
+ gap:10px;
+ margin-top:21px;
+}
+.stat{
+ min-width:0;
+ padding:14px;
+ border-radius:16px;
+ background:rgba(5,15,29,.5);
+ border:1px solid rgba(135,168,211,.09);
+}
+.stat.full{grid-column:1/-1}
+.label{
+ color:#71849f;
+ font-size:10px;
+ font-weight:700;
+ letter-spacing:.7px;
+ text-transform:uppercase;
+ margin-bottom:7px;
+}
+.value{
+ color:#f0f5ff;
+ font-size:14px;
+ font-weight:750;
+ overflow:hidden;
+ text-overflow:ellipsis;
+ white-space:nowrap;
+}
+.usage{
+ position:relative;
+ z-index:1;
+ margin-top:17px;
+}
+.usage-head{
+ display:flex;
+ justify-content:space-between;
+ color:#91a4c0;
+ font-size:11px;
+ font-weight:650;
+ margin-bottom:8px;
+}
+.progress{
+ height:9px;
+ overflow:hidden;
+ border-radius:99px;
+ background:#050d18;
+ box-shadow:inset 0 1px 3px rgba(0,0,0,.5);
+}
+.progress-bar{
+ height:100%;
+ border-radius:99px;
+ background:linear-gradient(90deg,#397ff0,#69a8ff);
+ box-shadow:0 0 15px rgba(66,137,255,.42);
+ transition:width .6s ease;
+}
+
+/* LINKS */
+.section{
+ display:flex;
+ align-items:center;
+ justify-content:space-between;
+ margin:27px 2px 13px;
+}
+.section-title{
+ font-size:19px;
+ font-weight:800;
+ letter-spacing:-.3px;
+}
+.section-count{
+ color:#7085a3;
+ font-size:11px;
+}
+.links{
+ display:flex;
+ flex-direction:column;
+ gap:11px;
+}
+.card{
+ padding:15px;
+ border-radius:19px;
+ background:linear-gradient(145deg,#111f34,#0d192b);
+ border:1px solid rgba(130,165,211,.12);
+ box-shadow:0 10px 28px rgba(0,0,0,.19);
+}
+.card-head{
+ display:flex;
+ align-items:center;
+ justify-content:space-between;
+ margin-bottom:12px;
+}
+.protocol{
+ display:flex;
+ align-items:center;
+ gap:10px;
+ min-width:0;
+}
+.protocol-icon{
+ flex:none;
+ width:37px;
+ height:37px;
+ display:grid;
+ place-items:center;
+ border-radius:11px;
+ background:#162a48;
+ color:#72a8ff;
+ font-size:18px;
+}
+.protocol-name{
+ font-size:14px;
+ font-weight:800;
+}
+.badge{
+ padding:5px 7px;
+ border-radius:7px;
+ color:#8297b5;
+ background:#081423;
+ font-size:9px;
+ font-weight:800;
+ letter-spacing:.5px;
+}
+.linkbox{
+ width:100%;
+ height:42px;
+ padding:0 11px;
+ border:1px solid rgba(127,159,201,.11);
+ border-radius:10px;
+ outline:none;
+ background:#07111f;
+ color:#70839f;
+ font-size:10px;
+}
+.actions{
+ display:grid;
+ grid-template-columns:1fr 1fr;
+ gap:8px;
+ margin-top:9px;
+}
+.btn{
+ height:40px;
+ border:0;
+ border-radius:10px;
+ color:#edf5ff;
+ background:#172d4c;
+ font-size:12px;
+ font-weight:750;
+ cursor:pointer;
+}
+.btn:active{transform:scale(.98)}
+.btn.qr{background:#10213a}
+.empty{
+ padding:24px 15px;
+ text-align:center;
+ color:#7286a3;
+ border-radius:17px;
+ background:#0e1b2d;
+}
+
+/* QR */
+.modal{
+ position:fixed;
+ inset:0;
+ z-index:100;
+ display:none;
+ align-items:center;
+ justify-content:center;
+ padding:20px;
+ background:rgba(1,7,15,.82);
+ backdrop-filter:blur(7px);
+}
+.modal.show{display:flex}
+.modal-box{
+ width:min(340px,100%);
+ padding:21px;
+ border-radius:23px;
+ text-align:center;
+ background:#101e32;
+ border:1px solid rgba(133,171,224,.15);
+ box-shadow:0 25px 70px rgba(0,0,0,.5);
+}
+.modal-title{
+ font-size:17px;
+ font-weight:800;
+}
+.modal-sub{
+ margin-top:5px;
+ color:#7185a3;
+ font-size:11px;
+}
+.qr{
+ width:max-content;
+ margin:17px auto;
+ padding:12px;
+ border-radius:13px;
+ background:#fff;
+}
+.close{
+ width:100%;
+ height:42px;
+ border:0;
+ border-radius:11px;
+ background:#1a3357;
+ color:#fff;
+ font-weight:750;
+}
+
+/* DESKTOP */
+@media(min-width:700px){
+ .container{padding-top:30px}
+ .links{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+ }
+ .card{padding:17px}
+}
+
+/* SMALL PHONE */
+@media(max-width:360px){
+ .container{padding-left:10px;padding-right:10px}
+ .profile{padding:18px}
+ .user-title{font-size:24px}
+ .stats{gap:8px}
+ .stat{padding:12px}
+ .value{font-size:13px}
+ .card{padding:13px}
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<header class="top">
+ <div class="brand">
+  <div class="logo">
+   <svg viewBox="0 0 40 40" fill="none">
+    <path d="M10 14L16 8L30 22L24 28L10 14Z"
+     stroke="#8db8ff" stroke-width="4"
+     stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M30 14L24 8L10 22L16 28L30 14Z"
+     stroke="#4c87ff" stroke-width="4"
+     stroke-linecap="round" stroke-linejoin="round"/>
+   </svg>
+  </div>
+  <span>FaiqXray</span>
+ </div>
+ <div class="settings">⚙</div>
+</header>
+
+{% set used = user.used_traffic or 0 %}
+{% set limit = user.data_limit or 0 %}
+
+{% if limit > 0 %}
+ {% set percent = ((used / limit) * 100)|round(0)|int %}
+ {% if percent > 100 %}{% set percent = 100 %}{% endif %}
+{% else %}
+ {% set percent = 100 %}
+{% endif %}
+
+<section class="profile">
+
+ <div class="profile-head">
+  <div>
+   <div class="user-title">{{ user.username }}</div>
+   <div class="user-sub">Subscription Information</div>
+  </div>
+
+  <div class="status {% if user.status.value != 'active' %}off{% endif %}">
+   {{ user.status.value }}
+  </div>
+ </div>
+
+ <div class="stats">
+
+  <div class="stat">
+   <div class="label">Data Usage</div>
+   <div class="value">
+    {{ user.used_traffic|bytesformat }}
+    /
+    {% if user.data_limit %}
+     {{ user.data_limit|bytesformat }}
+    {% else %}
+     ∞
+    {% endif %}
+   </div>
+  </div>
+
+  <div class="stat">
+   <div class="label">Expiration</div>
+   <div class="value">
+    {% if user.expire %}
+     {{ user.expire|datetime }}
+    {% else %}
+     Never
+    {% endif %}
+   </div>
+  </div>
+
+  <div class="stat full">
+   <div class="label">Remaining Days</div>
+   <div class="value">
+    {% if user.expire %}
+     {% set days = ((user.expire - now().timestamp()) / 86400)|round(0,'floor')|int %}
+     {% if days < 0 %}
+      Expired
+     {% else %}
+      {{ days }} Days
+     {% endif %}
+    {% else %}
+     Unlimited
+    {% endif %}
+   </div>
+  </div>
+
+ </div>
+
+ <div class="usage">
+  <div class="usage-head">
+   <span>DATA USAGE</span>
+   <span>{{ percent }}%</span>
+  </div>
+  <div class="progress">
+   <div class="progress-bar" style="width:{{ percent }}%"></div>
+  </div>
+ </div>
+
+</section>
+
+<div class="section">
+ <div class="section-title">Subscription Links</div>
+ <div class="section-count">{{ user.links|length }} Links</div>
+</div>
+
+<div class="links">
+
+{% for link in user.links %}
+{% if link and link != 'False' %}
+
+<div class="card" data-link="{{ link|e }}">
+
+ <div class="card-head">
+  <div class="protocol">
+   <div class="protocol-icon">⚡</div>
+   <div class="protocol-name">Connection {{ loop.index }}</div>
+  </div>
+  <div class="badge protocol-badge">LINK</div>
+ </div>
+
+ <input class="linkbox" value="{{ link|e }}" readonly>
+
+ <div class="actions">
+  <button class="btn copy-btn" type="button">COPY</button>
+  <button class="btn qr qr-btn" type="button">QR CODE</button>
+ </div>
+
+</div>
+
+{% endif %}
+{% endfor %}
+
+</div>
+
+{% if not user.links %}
+<div class="empty">No subscription links available.</div>
+{% endif %}
+
+</div>
+
+<div class="modal" id="qrModal">
+ <div class="modal-box">
+  <div class="modal-title" id="qrTitle">QR Code</div>
+  <div class="modal-sub">Scan menggunakan aplikasi Xray/V2Ray</div>
+  <div class="qr" id="qrCode"></div>
+  <button class="close" id="closeQr">TUTUP</button>
+ </div>
+</div>
+
+<script>
+function decodeVmess(link){
+ try{
+  let b64=link.substring(8).replace(/-/g,'+').replace(/_/g,'/');
+  while(b64.length%4)b64+='=';
+  const raw=atob(b64);
+  const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
+ }catch(e){return null}
+}
+
+function classify(link){
+ const l=link.toLowerCase();
+
+ if(l.startsWith('vmess://')){
+  const o=decodeVmess(link);
+  if(o){
+   const n=String(o.net||o.type||'').toLowerCase();
+   if(n==='ws')return['VMess WS','WS'];
+   if(n==='grpc'||n==='gun')return['VMess Upgrade','gRPC'];
+   if(n==='h2'||n==='http')return['VMess HTTP','HTTP'];
+  }
+  return['VMess','VMESS'];
+ }
+
+ if(l.startsWith('vless://')){
+  try{
+   const u=new URL(link);
+   const n=(u.searchParams.get('type')||
+            u.searchParams.get('network')||'tcp').toLowerCase();
+
+   if(n==='ws')return['VLESS WS','WS'];
+   if(n==='grpc'||n==='gun')return['VLESS Upgrade','gRPC'];
+
+   return['VLESS',n.toUpperCase()];
+  }catch(e){
+   return['VLESS','VLESS'];
+  }
+ }
+
+ if(l.startsWith('trojan://'))return['Trojan','TLS'];
+ if(l.startsWith('ss://'))return['Shadowsocks','SS'];
+
+ return['Connection','LINK'];
+}
+
+document.querySelectorAll('.card').forEach(card=>{
+ const link=card.dataset.link;
+ const info=classify(link);
+
+ card.querySelector('.protocol-name').textContent=info[0];
+ card.querySelector('.protocol-badge').textContent=info[1];
+
+ const copy=card.querySelector('.copy-btn');
+
+ copy.onclick=async()=>{
+  try{
+   await navigator.clipboard.writeText(link);
+  }catch(e){
+   const input=card.querySelector('.linkbox');
+   input.select();
+   document.execCommand('copy');
+  }
+
+  copy.textContent='COPIED ✓';
+
+  setTimeout(()=>{
+   copy.textContent='COPY';
+  },1300);
+ };
+
+ card.querySelector('.qr-btn').onclick=()=>{
+  const modal=document.getElementById('qrModal');
+  const qr=document.getElementById('qrCode');
+
+  qr.innerHTML='';
+  document.getElementById('qrTitle').textContent=info[0];
+
+  new QRCode(qr,{
+   text:link,
+   width:220,
+   height:220,
+   correctLevel:QRCode.CorrectLevel.M
+  });
+
+  modal.classList.add('show');
+ };
+});
+
+document.getElementById('closeQr').onclick=()=>{
+ document.getElementById('qrModal').classList.remove('show');
+};
+
+document.getElementById('qrModal').onclick=e=>{
+ if(e.target.id==='qrModal'){
+  e.currentTarget.classList.remove('show');
+ }
+};
+</script>
+
+</body>
+</html>
